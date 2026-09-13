@@ -3,7 +3,7 @@
 use std::task::{Poll, ready};
 
 use moq_net::{
-	PathOwned, announce, broadcast,
+	Path, PathOwned, announce, broadcast,
 	origin::{self, Requesting},
 };
 
@@ -81,7 +81,14 @@ impl Room {
 			let Some(update) = ready!(self.announced.poll_next(waiter)) else {
 				return Poll::Ready(None);
 			};
-			let path = update.prefix.as_path().to_owned();
+			// A literal or a prefix-shaped `path/**` names one broadcast; other wildcards do not.
+			let path = if update.pattern.is_literal() {
+				Path::new(update.pattern.as_str()).to_owned()
+			} else if let Some(prefix) = update.pattern.as_prefix() {
+				Path::new(prefix).to_owned()
+			} else {
+				continue;
+			};
 			let Some(parsed) = parse(&path) else {
 				continue;
 			};

@@ -83,14 +83,17 @@ export class Room {
 			const update = await Promise.race([effect.cancel, announced.next()]);
 			if (!update) break;
 
-			const parsed = parse(update.prefix);
+			const covered = update.pattern.isLiteral ? update.pattern.text : update.pattern.asPrefix();
+			if (covered === undefined) continue;
+			const suffix = Moq.Path.from(covered);
+			const parsed = parse(suffix);
 			if (!parsed) continue;
 
 			const local = this.identity.peek();
 			if (local && parsed.identity === local) continue;
 
 			if (update.active) {
-				this.#add(parsed.identity, parsed.kind, Moq.Path.join(announced.prefix, update.prefix));
+				this.#add(parsed.identity, parsed.kind, Moq.Path.join(announced.prefix, suffix));
 			} else {
 				this.#remove(parsed.identity, parsed.kind);
 			}

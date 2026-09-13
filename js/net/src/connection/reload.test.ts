@@ -557,7 +557,7 @@ test("closing an announce consumer during upstream teardown does not append retr
 	const consumer = reload.announced();
 	const errors = spyOn(console, "error").mockImplementation(() => {});
 	try {
-		upstream.append({ prefix: Path.from("alice/camera.hang"), active: true });
+		upstream.append({ pattern: Path.Pattern.literal("alice/camera.hang"), active: true });
 		await consumer.next();
 		upstream.close();
 		// Let the upstream read settle, but close before the pump's finally callback runs.

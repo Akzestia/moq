@@ -18,7 +18,10 @@ test("room restores the announce prefix and reconciles local identity changes", 
 			announced(prefix: Net.Path.Valid) {
 				const stream = new Net.Announce.Producer(prefix);
 				streams.push(stream);
-				stream.append({ prefix: Net.Path.from("bob/camera.hang"), active: true });
+				stream.append({
+					pattern: Net.Path.Pattern.subtree(Net.Path.from("bob/camera.hang")),
+					active: true,
+				});
 				return stream.consume();
 			},
 		}),
