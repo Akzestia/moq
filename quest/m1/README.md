@@ -2,7 +2,8 @@
 
 ## Goal
 
-Everything that must land on `dev` before it merges to `main`: the breaking
+Work intended to land on `dev` before it merges to `main`, or be explicitly
+deferred by the maintainer: the breaking
 API and wire changes (the announce and wildcard surface, error codes, the
 allocator mirrors, the bindings), the merge gates (the monotonic timeline),
 and the merge itself.
@@ -24,6 +25,14 @@ does not require it.
 ## Quests
 
 - [Auth API](/quest/m1/auth-api/README.md) - the endpoint contract moq.pro adopts: versioned grants, named mTLS peers, re-checks that move a tier and resize a scope, one open question planned first
+- [Route cold cost](/quest/m1/route-cold-cost.md) - preserve both costs through the published binding record and C layout before release
+- [Audio codec object](/quest/m1/api-audio-codec.md) - typed Opus selection allows future codecs without another binding enum break
+- [Worker ownership](/quest/m1/api-worker-ownership.md) - consuming split ownership retains sockets and joins the group before release
+- [Origin scope API](/quest/m1/api-origin-pattern-scopes.md) - typed scope grants preserve current prefixes and refuse unsupported patterns
+- [Token claims API](/quest/m1/api-token-claims.md) - working versioned claim types precede the v1 default rollout
+- [Cluster peer API](/quest/m1/api-cluster-peer-config.md) - typed peer configuration supports current symmetric policy
+- [C decoder output](/quest/m1/api-c-decoder-output.md) - settle the C output layout with working CPU conversion and resize before release
+- [Broadcast clock](/quest/m1/broadcast-clock.md) - replace archive wall with one fixed catalog-root clock shared by every track
 - [Relay embedding](/quest/m1/api-relay-embedding.md) - custom routes retain the owner of listeners, workers, and shutdown
 - [FFI frame cursor](/quest/m1/api-ffi-frame-cursor.md) - empty groups and cancelled reads do not become false EOF or lost frames
 - [Subscription bounds](/quest/m1/api-subscription-bounds.md) - local and requested ranges use consistent exclusive ends

@@ -77,3 +77,7 @@ On dev, additive; it lands with the merge as part of this line.
 ## Related
 
 - [Relay auth](/quest/m2/path-patterns/relay-auth.md) - the scope contract this inherits
+
+## Related
+
+- [Relay auth](/quest/m2/path-patterns/relay-auth.md) - the scope contract this inherits
