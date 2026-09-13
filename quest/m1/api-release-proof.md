@@ -29,7 +29,6 @@ New findings and recommendations, ordered by consequence:
 | Relay embedding can discard newly added socket owners without a compile error | Source-traced; real edge embedding pattern | [Embedding](/quest/m1/api-relay-embedding.md) |
 | FFI first-frame convenience treats empty groups as EOF and loses an acquired group on cancellation | Source-traced | [Frame cursor](/quest/m1/api-ffi-frame-cursor.md) |
 | JSON/binary readers hide the subscription cleanup handle | Abandoned: finish must be `&mut` so abort can follow | deferred |
-| Local inclusive ends cannot express the empty exclusive range | Existing C adapter documents the mismatch | [Bounds](/quest/m1/api-subscription-bounds.md) |
 | Typed Getter input can be rejected solely for lacking an internal brand | Fixed: getter() reuses any conforming Getter | Fixed |
 | JSON edit guard logs failed implicit publication | Fixed: `modify` refuses a closed track, a failed drop aborts it | completed |
 | Terminal publisher methods inconsistently retain the caller's handle | Signature comparison; finish must borrow so abort can follow | [Finish borrows](/quest/m1/api-finish-borrow.md) |

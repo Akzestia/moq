@@ -1,6 +1,7 @@
 use crate::{frame, group, origin, track};
 use std::{
 	collections::HashMap,
+	ops::Bound,
 	task::{Poll, ready},
 	time::Duration,
 };
@@ -1830,7 +1831,7 @@ impl<S: crate::transport::poll::Session> TrackServe<S> {
 				}
 			}
 		}
-		track.end_at(range.end.map(|end| end.group));
+		track.end_at(range.end.map_or(Bound::Unbounded, |end| Bound::Included(end.group)));
 
 		Self {
 			session,
@@ -1968,7 +1969,7 @@ impl<S: crate::transport::poll::Session> GroupServe<S> {
 		slice: GroupSlice,
 	) -> Self {
 		group.skip_to(slice.skip);
-		group.end_at(slice.until.and_then(|until| until.checked_sub(1)));
+		group.end_at(slice.until.map_or(Bound::Unbounded, Bound::Excluded));
 		let object_delta = group.index();
 		Self {
 			session,

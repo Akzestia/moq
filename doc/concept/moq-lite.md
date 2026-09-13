@@ -176,3 +176,17 @@ and TypeScript `Announce.Event.pattern` carry a `Pattern`. A subtree claim is
 `room/**`, while `room/*` covers one child segment. Use `as_prefix()` in Rust or
 `asPrefix()` in TypeScript when a consumer specifically needs a prefix-shaped
 claim; an arbitrary pattern is not a concrete broadcast name.
+
+## Local read limits
+
+Group ranges name which groups a reader may deliver. In Rust,
+`with_groups(2..=5)` includes group 5, while `with_groups(2..5)` excludes it.
+An existing reader uses `set_groups(...)`. TypeScript spells the endpoints
+explicitly: `reader.withGroups({ start: { included: 2 }, end: { included: 5 } })`
+or `reader.setGroups(...)`.
+
+Changing these local limits preserves read progress. Raising the start skips
+lower groups; lowering it never rewinds the reader. Raising or removing the
+end cap makes unread buffered groups available again. These local limits do
+not change upstream demand; subscription preferences control that separately.
+The wire encoding is unchanged.

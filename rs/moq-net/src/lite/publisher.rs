@@ -1,6 +1,7 @@
 use crate::{SessionError, announce, frame, group, origin, track};
 use std::{
 	collections::HashMap,
+	ops::Bound,
 	sync::Arc,
 	task::{Context, Poll, ready},
 	time::Duration,
@@ -1368,7 +1369,7 @@ impl<S: crate::transport::poll::Session> FetchServe<S> {
 					// The end is a serving cap only: the cached group runs to the end of
 					// the group so it stays usable for anyone else (see
 					// `group::Fetch::frame_start`).
-					group.end_at(msg.end_frame);
+					group.end_at(msg.end_frame.map_or(Bound::Unbounded, Bound::Included));
 
 					// FETCH is gated to lite-05+, which learned the track timescale via
 					// TRACK_INFO.
@@ -2160,7 +2161,7 @@ fn position_group(group: &mut group::Consumer, start: Option<(u64, u64)>, end: O
 	if let Some((sequence, frame)) = end
 		&& sequence == group.sequence
 	{
-		group.end_at(frame);
+		group.end_at(Bound::Included(frame));
 	}
 
 	true
@@ -2354,7 +2355,7 @@ impl<S: crate::transport::poll::Session> TrackRun<S> {
 
 		// Apply the initial cap from the original Subscribe. Subsequent updates
 		// flow through the SUBSCRIBE_UPDATE arm below.
-		track.end_at(bounds.end_group);
+		track.end_at(bounds.end_group.map_or(Bound::Unbounded, Bound::Included));
 
 		let emit_range = ctx.version.has_track_stream();
 		let datagrams = ctx.version.has_datagrams() && ctx.session.max_datagram_size() > 0;
@@ -2373,11 +2374,11 @@ impl<S: crate::transport::poll::Session> TrackRun<S> {
 		}
 	}
 
-	/// `end_group` is a serving cap, not a subscription terminator: groups with
-	/// sequence > cap are held in the producer's cache until the subscriber raises
-	/// the cap (or unsets it) via SUBSCRIBE_UPDATE, then served in order. Only a
-	/// peer FIN actually ends the subscription. This is what lets relays pause an
-	/// upstream subscription across consumer churn without tearing it down.
+	/// `end_group` is a serving cap, not a subscription terminator: groups past the
+	/// cap are held in the producer's cache until the subscriber raises the cap (or
+	/// unsets it) via SUBSCRIBE_UPDATE, then served in order. Only a peer FIN actually
+	/// ends the subscription. This is what lets relays pause an upstream subscription
+	/// across consumer churn without tearing it down.
 	fn poll(&mut self, stream: &mut Stream<S, Version>, waiter: &kio::Waiter) -> Poll<Result<TrackEnd, Error>> {
 		let mut cx = Context::from_waker(waiter.waker());
 		loop {
@@ -2409,7 +2410,8 @@ impl<S: crate::transport::poll::Session> TrackRun<S> {
 				if let Some(start_group) = upd.start_group {
 					self.track.start_at(start_group);
 				}
-				self.track.end_at(upd.end_group);
+				self.track
+					.end_at(upd.end_group.map_or(Bound::Unbounded, Bound::Included));
 				self.start_frame = bounds.start_frame();
 				self.end_frame = bounds.end_frame();
 				continue;

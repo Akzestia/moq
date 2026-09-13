@@ -83,7 +83,7 @@ export class Subscriber {
 	/** Read window changes from an existing subscription. */
 	constructor(track: Track.Subscriber) {
 		const latest = track.latest();
-		if (latest !== undefined) track.startAt(latest);
+		if (latest !== undefined) track.setGroups({ start: { included: latest } });
 		this.#track = track;
 		this.#consumer = new Json.Window.Consumer({ track });
 	}

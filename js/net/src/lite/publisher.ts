@@ -18,6 +18,7 @@ import { Priority, sendOrder } from "./priority.ts";
 import { Probe } from "./probe.ts";
 import {
 	encodeSubscribeResponse,
+	exclusiveGroupEnd,
 	type Subscribe,
 	SubscribeEnd,
 	SubscribeOk,
@@ -113,7 +114,7 @@ type FrameBounds = {
  * The frames of `sequence` a subscription asked for, as a start index and an inclusive end.
  *
  * The frame bounds qualify the start and end group only; every other group is served whole.
- * Which groups are served at all is the subscriber's read cursor (`startAt` / `endAt`),
+ * Which groups are served at all is the subscriber's read cursor (`replaceGroups`),
  * applied when a group is popped rather than re-checked here.
  *
  * The serving loop calls this synchronously after the pop, before any SUBSCRIBE_UPDATE can
@@ -310,7 +311,7 @@ function positionCursor(track: track.Subscriber, version: Version, startGroup: n
 	if (resolvesStart(version) || startGroup !== undefined) return;
 
 	const latest = track.latest();
-	if (latest !== undefined) track.startAt(latest);
+	if (latest !== undefined) hooks.replaceGroups(track, { start: { included: latest } });
 }
 
 /**
@@ -563,14 +564,15 @@ export class Publisher {
 			return;
 		}
 
+		const endGroup = exclusiveGroupEnd(msg.endGroup);
 		const track = front.subscribe(msg.track, {
 			priority: msg.priority,
 			maxAge: servingMaxAge(this.version, msg.maxAge),
 			startGroup: msg.startGroup,
-			endGroup: msg.endGroup,
+			endGroup,
 		});
 		positionCursor(track, this.version, msg.startGroup);
-		track.endAt(msg.endGroup);
+		hooks.replaceGroups(track, { end: endGroup === undefined ? undefined : { excluded: endGroup } });
 
 		// The best-effort datagram loop, started once serving begins. It parks when the
 		// track finishes (recvDatagram returns undefined), so #runTrack alone ends the
@@ -621,7 +623,7 @@ export class Publisher {
 						priority: update.priority,
 						maxAge: servingMaxAge(this.version, update.maxAge),
 						startGroup: update.startGroup,
-						endGroup: update.endGroup,
+						endGroup: exclusiveGroupEnd(update.endGroup),
 					});
 				},
 			});
@@ -774,8 +776,10 @@ export class Publisher {
 						case "update": {
 							const update = control.update;
 							console.debug(`subscribe update: broadcast=${broadcast} track=${track.name}`);
-							if (update.startGroup !== undefined) track.startAt(update.startGroup);
-							track.endAt(update.endGroup);
+							hooks.replaceGroups(track, {
+								start: update.startGroup === undefined ? undefined : { included: update.startGroup },
+								end: update.endGroup === undefined ? undefined : { included: update.endGroup },
+							});
 							bounds.startGroup = update.startGroup;
 							bounds.startFrame = update.startFrame;
 							bounds.endGroup = update.endGroup;
@@ -821,7 +825,10 @@ export class Publisher {
 					// SUBSCRIBE_START promises nothing below this sequence will be delivered.
 					// Arrival-order serving could later surface a straggler below the first
 					// group, so pin the floor to what was announced.
-					track.startAt(group.sequence);
+					hooks.replaceGroups(track, {
+						start: { included: group.sequence },
+						end: bounds.endGroup === undefined ? undefined : { included: bounds.endGroup },
+					});
 					if (
 						!(await controls.response(
 							encodeSubscribeResponse(

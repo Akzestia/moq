@@ -232,8 +232,9 @@ test("integration: lite carries a fractional maxAge as a whole millisecond", asy
 test("integration: lite applies initial and updated group bounds", async () => {
 	const GROUP_COUNT = 6;
 	const INITIAL_START_GROUP = 1;
-	const INITIAL_END_GROUP = 2;
+	const INITIAL_END_GROUP = 3; // exclusive: groups 1 and 2
 	const UPDATED_GROUP = 4;
+	const UPDATED_END_GROUP = 5; // exclusive: group 4
 	const REPLAY_LATENCY_MS = 5000;
 	const PENDING_ASSERT_MS = 20;
 	const UPDATE_TIMEOUT_MS = 1000;
@@ -260,7 +261,7 @@ test("integration: lite applies initial and updated group bounds", async () => {
 		.ordered();
 	try {
 		expect((await subscriber.nextGroup())?.sequence).toBe(INITIAL_START_GROUP);
-		expect((await subscriber.nextGroup())?.sequence).toBe(INITIAL_END_GROUP);
+		expect((await subscriber.nextGroup())?.sequence).toBe(INITIAL_END_GROUP - 1);
 
 		const pending = subscriber.nextGroup();
 		expect(await Promise.race([pending, sleep(PENDING_ASSERT_MS).then(() => "pending")])).toBe("pending");
@@ -268,7 +269,7 @@ test("integration: lite applies initial and updated group bounds", async () => {
 		subscriber.update({
 			maxAge: REPLAY_LATENCY_MS,
 			startGroup: UPDATED_GROUP,
-			endGroup: UPDATED_GROUP,
+			endGroup: UPDATED_END_GROUP,
 		});
 		expect((await withTimeout(pending, UPDATE_TIMEOUT_MS, "updated group bound timed out"))?.sequence).toBe(
 			UPDATED_GROUP,
@@ -278,6 +279,48 @@ test("integration: lite applies initial and updated group bounds", async () => {
 		expect(await Promise.race([capped, sleep(PENDING_ASSERT_MS).then(() => "pending")])).toBe("pending");
 	} finally {
 		subscriber.close();
+		remote.close();
+		broadcast.close();
+		client.close();
+		server.close();
+	}
+});
+
+test("integration: lite refuses an empty requested range on open and on update", async () => {
+	const GROUP_COUNT = 4;
+	const REPLAY_LATENCY_MS = 5000;
+	const TIMEOUT_MS = 1000;
+
+	const pair = createMockTransportPair(Lite.ALPN_05);
+	const origin = new OriginProducer();
+	const [client, server] = await Promise.all([
+		connect(url, { transport: pair.client }),
+		accept(pair.server, url, { publish: origin.consume() }),
+	]);
+
+	const broadcast = publish(origin, Path.from("test"));
+	const producer = broadcast.createTrack("video");
+	for (let sequence = 0; sequence < GROUP_COUNT; sequence++) producer.appendGroup().close();
+
+	const remote = client.consume(Path.from("test"));
+	const video = remote.track("video");
+	try {
+		// Bounds that meet cannot go on the wire: the nearest encoding inverts the range.
+		const empty = video.subscribe({ maxAge: REPLAY_LATENCY_MS, startGroup: 2, endGroup: 2 });
+		await expect(withTimeout(empty.recvGroup(), TIMEOUT_MS, "empty open never settled")).rejects.toThrow(
+			"empty subscription range cannot be encoded",
+		);
+		empty.close();
+
+		// A live subscription whose demand later collapses to nothing fails the same way.
+		const live = video.subscribe({ maxAge: REPLAY_LATENCY_MS, startGroup: 1, endGroup: 2 }).ordered();
+		expect((await live.nextGroup())?.sequence).toBe(1);
+		live.update({ maxAge: REPLAY_LATENCY_MS, startGroup: 3, endGroup: 3 });
+		await expect(withTimeout(live.nextGroup(), TIMEOUT_MS, "empty update never settled")).rejects.toThrow(
+			"empty subscription range cannot be encoded",
+		);
+		live.close();
+	} finally {
 		remote.close();
 		broadcast.close();
 		client.close();
