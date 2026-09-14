@@ -138,6 +138,9 @@ pub enum Status {
 struct State {
 	/// Current connection status, or `None` before the first connect.
 	status: Option<Status>,
+	/// Cumulative connects and disconnects, bumped by the reconnect loop itself so a session that
+	/// connects and drops before a consumer polls still counts.
+	presence: moq_net::stats::Presence,
 	/// The negotiated MoQ version of the live session, or `None` when disconnected.
 	version: Option<Version>,
 	/// Set when the reconnect loop permanently gives up: the backoff timeout expiring, or a server
@@ -164,9 +167,40 @@ pub struct ConnectionSnapshot {
 #[derive(Clone)]
 pub struct ConnectionStatsReader {
 	state: kio::Consumer<State>,
+	last_presence: moq_net::stats::Presence,
 }
 
 impl ConnectionStatsReader {
+	/// Cumulative connects and disconnects of this reconnect loop, the same shape as a relay's
+	/// sessions track: `sessions - sessions_closed` is 1 while connected, and a rate is a delta over
+	/// any window.
+	pub fn presence(&self) -> moq_net::stats::Presence {
+		self.state.read().presence
+	}
+
+	/// Poll until either presence counter moves past what this handle last reported.
+	pub fn poll_presence(&mut self, waiter: &kio::Waiter) -> Poll<crate::Result<moq_net::stats::Presence>> {
+		let last = self.last_presence;
+		let presence = match ready!(self.state.poll(waiter, |state| match state.presence {
+			presence if presence != last => Poll::Ready(presence),
+			_ => Poll::Pending,
+		})) {
+			Ok(presence) => presence,
+			Err(state) => return Poll::Ready(Err(terminal(&state))),
+		};
+
+		self.last_presence = presence;
+		Poll::Ready(Ok(presence))
+	}
+
+	/// Wait until either presence counter moves past what this handle last reported.
+	///
+	/// Unlike [`Reconnect::status`], a connect and disconnect that both land before the caller polls
+	/// are not coalesced away: the counters still moved.
+	pub async fn presence_changed(&mut self) -> crate::Result<moq_net::stats::Presence> {
+		kio::wait(|waiter| self.poll_presence(waiter)).await
+	}
+
 	/// Snapshot the current connection's stats, or `None` if not currently connected.
 	pub fn stats(&self) -> Option<moq_net::ConnectionStats> {
 		self.state.read().session.as_ref().map(moq_net::Session::stats)
@@ -263,6 +297,7 @@ impl Reconnect {
 				Ok(session) => {
 					tracing::info!(url = %url_log, "connected");
 					if let Ok(mut state) = state.write() {
+						state.presence.sessions += 1;
 						state.status = Some(Status::Connected);
 						state.version = Some(session.version());
 						state.session = Some(session.clone());
@@ -273,6 +308,7 @@ impl Reconnect {
 					// persistent producers meanwhile so consumers track the live stats across the connection.
 					let closed = run_session(send_bw, recv_bw, &session).await;
 					if let Ok(mut state) = state.write() {
+						state.presence.sessions_closed += 1;
 						state.status = Some(Status::Disconnected);
 						state.version = None;
 						state.session = None;
@@ -426,6 +462,7 @@ impl Reconnect {
 	pub fn stats(&self) -> ConnectionStatsReader {
 		ConnectionStatsReader {
 			state: self.state.clone(),
+			last_presence: moq_net::stats::Presence::default(),
 		}
 	}
 }
@@ -525,14 +562,47 @@ mod tests {
 		let producer = kio::Producer::<State>::default();
 		let reader = ConnectionStatsReader {
 			state: producer.consume(),
+			last_presence: Default::default(),
 		};
+		assert_eq!(reader.presence().active(), 0);
 		assert!(reader.snapshot().is_none());
-		producer.write().ok().unwrap().session = Some(session);
+		{
+			let mut state = producer.write().ok().unwrap();
+			state.presence.sessions = 2;
+			state.presence.sessions_closed = 1;
+			state.session = Some(session);
+		}
+		assert_eq!(reader.presence().sessions, 2);
+		assert_eq!(reader.presence().active(), 1);
 		// The snapshot must read the protocol from that same session, without a second state query.
 		assert_eq!(reader.snapshot().unwrap().version, version);
 		producer.write().ok().unwrap().session = None;
 		assert!(reader.snapshot().is_none());
 		drop(accepted);
+	}
+
+	/// A connect and disconnect that both land before the consumer polls leave the status where it
+	/// was, but the counters still report the flap.
+	#[tokio::test]
+	async fn presence_change_survives_coalesced_status() {
+		let producer = kio::Producer::<State>::default();
+		let mut reader = ConnectionStatsReader {
+			state: producer.consume(),
+			last_presence: Default::default(),
+		};
+		{
+			let mut state = producer.write().ok().unwrap();
+			state.presence.sessions = 1;
+			state.status = Some(Status::Connected);
+		}
+		{
+			let mut state = producer.write().ok().unwrap();
+			state.presence.sessions_closed = 1;
+			state.status = Some(Status::Disconnected);
+		}
+		let presence = reader.presence_changed().await.unwrap();
+		assert_eq!((presence.sessions, presence.sessions_closed), (1, 1));
+		assert_eq!(presence.active(), 0);
 	}
 
 	/// The retry loop is `delay = min(delay * multiplier, max)`, so a zero anywhere
