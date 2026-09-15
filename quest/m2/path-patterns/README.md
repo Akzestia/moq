@@ -59,13 +59,13 @@ trips, and the moq-net fuzz harness's `pattern` target prevent semantic drift at
 the authorization boundary. Matching is linear and inherits `Path::MAX_PARTS`
 (32), which also bounds residual expansion.
 
-Every persisted or wire policy carries a version. Missing `v` is v0 prefix
-semantics forever. V1 uses exact patterns and rejects legacy and v1 grant
-fields mixed in one object. Existing state migrates without changing access:
-`foo` becomes `foo/**` and an empty prefix becomes `**`. New SDKs, CLIs, and
-APIs default to v1 in a breaking major release; legacy minting is explicit.
-The moq.pro (downstream) token minting, public-access migration, scoped-key,
-and rule-editor work consume these versioned shapes downstream.
+Grants and claims carry no version. The [Auth server](/quest/m1/auth/README.md)
+line makes `moq-auth` read patterns only: `foo` means exactly `foo`, a
+subtree is `foo/**`, and an unversioned prefix credential fails verification.
+Translating the prefix credentials a deployment already issued is that
+deployment's job at its own edge for a deprecation window, which is what
+moq.pro (downstream) does. A wire message that carried prefixes keeps them on
+the protocol versions that defined them; only new versions carry patterns.
 
 The syntax follows Ant-style path patterns without `?`, classes, or braces.
 NATS subjects motivate segment wildcards and reserved wildcard bytes; Vault
@@ -94,3 +94,5 @@ CAT cannot represent `pid/*/chat`.
   matcher while retaining its own cost, pool, refusal, and resolution work
 - [mTLS explicit scope](/quest/m1/auth-api/mtls-scope.md) - an mTLS grant
   uses the same versioned publish and subscribe pattern sets
+- [Auth server](/quest/m1/auth/README.md) - pattern claims and grants at
+  the authorization boundary, prefix-shaped until Origin scopes lands

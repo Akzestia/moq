@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(relay)* `Cluster::with_cache`; pass the cache to `Cluster::new` via `ClusterOptions`
 - *(relay)* [**breaking**] public `Relay` fields (`server`, `workers`, `uring`, and the rest). Use the accessors and `run`.
 
+## [0.14.17](https://github.com/moq-dev/moq/compare/moq-relay-v0.14.16...moq-relay-v0.14.17) - 2026-09-13
+
+### Added
+
+- *(moq-net)* add moq-transport draft-21 (moqt-21) ([#3574](https://github.com/moq-dev/moq/pull/3574))
+
 ## [0.14.16](https://github.com/moq-dev/moq/compare/moq-relay-v0.14.15...moq-relay-v0.14.16) - 2026-09-09
 
 ### Fixed

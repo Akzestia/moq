@@ -25,6 +25,7 @@ does not require it.
 ## Quests
 
 - [Auth API](/quest/m1/auth-api/README.md) - the endpoint contract moq.pro adopts: versioned grants, named mTLS peers, re-checks that move a tier and resize a scope, one open question planned first
+- [Auth server](/quest/m1/auth/README.md) - one JSON request per connection through `moq-auth`, `--auth-url` or `--auth-public` as the whole relay configuration, `moq auth serve` carrying the old policy, mTLS a fact and never a grant, moq-token retired
 - [Route cold cost](/quest/m1/route-cold-cost.md) - preserve both costs through the published binding record and C layout before release
 - [Worker ownership](/quest/m1/api-worker-ownership.md) - consuming split ownership retains sockets and joins the group before release
 - [Origin scope API](/quest/m1/api-origin-pattern-scopes.md) - typed scope grants preserve current prefixes and refuse unsupported patterns
@@ -33,6 +34,9 @@ does not require it.
 - [Broadcast clock](/quest/m1/broadcast-clock.md) - replace archive wall with one fixed catalog-root clock shared by every track
 - [FFI frame cursor](/quest/m1/api-ffi-frame-cursor.md) - empty groups and cancelled reads do not become false EOF or lost frames
 - [Publisher finish borrows](/quest/m1/api-finish-borrow.md) - finish borrows the handle so abort can still run after a clean end
+- [Rate estimate names](/quest/m1/api-rate-estimate-names.md) - the send and receive estimates carry `estimated_*_rate` on the C ABI, every binding, and moqsink
+- [Reconnect stats handle](/quest/m1/api-reconnect-stats-handle.md) - `ConnectionStatsReader` is renamed for its role
+- [Counter edge names](/quest/m1/api-counter-edge-names.md) - every cumulative counter pair is `*_started` / `*_ended` on the wire and in Rust, with the old names still read and written
 - [External API proof](/quest/m1/api-release-proof.md) - packaged callers exercise real moq.pro use cases and record each audit finding's disposition
 - [Monotonic timeline](/quest/m1/monotonic-timeline.md) - a marker group of one empty frame declares a break and moves the live edge; producers refuse a rewind; consumers jump the playhead on an unproven hole and drop rewind detection
 - [Anonymous rank](/quest/m1/anonymous-route-rank.md) - moq-net: a route through an anonymous hop ranks below every identified route at any cost, and hop 0 travels the chain to say so

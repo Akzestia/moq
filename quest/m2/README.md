@@ -66,6 +66,7 @@ before format-specific metadata. Unrelated areas can proceed in parallel.
 - [Impaired path](/quest/m2/transport-impairment-profile.md) - the transport drills run over a seeded, impaired UDP path on any host
 - [Tooling](/quest/m2/tooling/README.md) - justfiles become a one-line menu over `sh/`, one impact map scopes CI, and every workflow step runs a recipe
 - [Generation](/quest/m2/hls-generation.md) - init URLs follow the rendition config and segment URLs carry an embedder-supplied generation, so caching can be re-enabled
+- [Wildcard](/quest/m2/wildcard/README.md) - a service advertises a path pattern it could serve instead of enumerating broadcasts
 - [Path patterns](/quest/m2/path-patterns/README.md) - one versioned matcher for every predicate over broadcast paths: tokens, origins, interest
 - [In-band auth](/quest/m2/auth/README.md) - a session tells its peer what it may publish and subscribe to, unions tokens presented in band, and fails loud on an out-of-scope publish
 - [Decoded frame ownership](/quest/m2/decoded-frames.md) - retain moq-video Frames across bindings, with native views or CPU conversion as needed
@@ -102,7 +103,6 @@ before format-specific metadata. Unrelated areas can proceed in parallel.
 - [Consume JSON snapshot patches](/quest/m2/json-merge.md) - measure consuming patches in snapshot encoding and decoding
 - [Relay memory](/quest/m2/relay-memory.md) - remeasure what an announcement costs after prefix routes
 - [Origin lookup CPU](/quest/m2/origin-cpu/README.md) - announce and subscribe stay cheap as the live advertisement set grows
-- [Route gauge](/quest/m2/route-gauge.md) - an operator sees how many routes a relay holds for a path
 - [PoP skipping](/quest/m2/pop-skipping/README.md) - short cold paths for unpopular broadcasts without losing warm backhaul dedup
 - [Route cost in the JS origin](/quest/m2/route-cost.md) - the browser origin ranks routes by cost and hops like Rust instead of newest-first
 - [Publish channel count](/quest/m2/publish-audio-channel-count.md) - forcing a channel count on an Audio.Capture stops costing the subscriber gaps of silence
