@@ -1531,6 +1531,18 @@ impl FrontState {
 		route.hops.iter().any(|hop| self.excluded.contains_key(hop))
 	}
 
+	/// Whether the front is a broadcast published in this process and still
+	/// announced. Only a remote source calls this (a local one shares the empty
+	/// chain and splices instead), and it can never win: the process publishing a
+	/// path is that path's origin, so a remote copy is our own content reflected by
+	/// a peer that carries no hop ids, which `excluded` cannot recognize when the
+	/// peer is anonymous, or an unrelated publisher that must not reach our
+	/// subscribers in place of what we are producing. An unannounced local source
+	/// (cached content reachable by exact path) is not a claim on the path.
+	fn holds_local_publisher(&self) -> bool {
+		self.publisher.is_none() && self.routes.iter().any(|r| r.route.announce)
+	}
+
 	/// Narrow `candidates` to the routes clean for every peer currently reading the
 	/// shared front, unless that would leave nothing.
 	///
@@ -1781,16 +1793,28 @@ async fn run_source(
 					broadcast = %full,
 					"path already live with a different publisher; parking this source until it ends",
 				);
-				// Wait for the incumbent front to close, or for our own route to
-				// change: a new route observation earns another takeover attempt, and
-				// our source closing means giving up.
+				// Snapshot the local-publisher hold: a remote parked by it must retry
+				// when the hold releases (the local route unannounces or its last
+				// source detaches into linger), not just when the front closes, or
+				// the path stays dark despite an announced remote waiting.
+				let held = incumbent.read().holds_local_publisher();
+				// Wait for the incumbent front to close or release its hold, or for
+				// our own route to change: a new route observation earns another
+				// takeover attempt, and our source closing means giving up.
 				let update = kio::wait(|waiter| {
 					if let Poll::Ready(update) = source.poll_route_changed(waiter) {
 						return Poll::Ready(Some(update));
 					}
-					// Ready on either the closed flag or the channel itself dying;
-					// both mean the incumbent is gone.
-					match incumbent.poll(waiter, |s| if s.closed { Poll::Ready(()) } else { Poll::Pending }) {
+					// Ready on the closed flag, the channel itself dying (both mean
+					// the incumbent is gone), or the local-publisher hold changing
+					// shape so a parked remote gets another attempt.
+					match incumbent.poll(waiter, |s| {
+						if s.closed || s.holds_local_publisher() != held {
+							Poll::Ready(())
+						} else {
+							Poll::Pending
+						}
+					}) {
 						Poll::Ready(_) => Poll::Ready(None),
 						Poll::Pending => Poll::Pending,
 					}
@@ -1899,9 +1923,10 @@ enum Attach {
 	/// The path's live front belongs to a different original publisher and this
 	/// source may not take it: either the source is offline (so it would rank below
 	/// every route the front holds), it already spent its takeover attempt on this
-	/// route and lost, or its chain leads back through a peer the front is already
-	/// exposed to, making it a reflection rather than rival content. The caller
-	/// parks on the returned table until the front closes.
+	/// route and lost, its chain leads back through a peer the front is already
+	/// exposed to, making it a reflection rather than rival content, or the front
+	/// is held by a local publisher. The caller parks on the returned table until
+	/// the front closes or the local-publisher hold releases.
 	Parked(kio::Producer<FrontState>),
 }
 
@@ -1950,7 +1975,10 @@ fn same_publisher(a: Option<Origin>, b: Option<Origin>) -> bool {
 /// chain that does not lead back through a peer this front is already exposed to
 /// (see [`FrontState::taints_a_reader`]): such a source is our own broadcast
 /// reflected by a peer that cannot detect the loop itself, and letting it evict the
-/// front is how a publish direction ends up withdrawing its own announce.
+/// front is how a publish direction ends up withdrawing its own announce. A front
+/// held by a local publisher is never taken over at all (see
+/// [`FrontState::holds_local_publisher`]): the exposure check needs the reflecting
+/// peer to have an identity, and an anonymous peer's echo has none.
 ///
 /// `may_take_over` is the caller's third gate: [`run_source`] clears it once this
 /// source has been displaced, so a route that already lost the path stands by
@@ -1984,7 +2012,7 @@ fn attach_source(
 				});
 				s.reselect(carrying);
 				joined = Some(id);
-			} else if !may_take_over || !route.announce || s.taints_a_reader(&route) {
+			} else if !may_take_over || !route.announce || s.taints_a_reader(&route) || s.holds_local_publisher() {
 				return Attach::Parked(existing.state.clone());
 			} else {
 				// New content at a live path: the newest publisher wins it. Closing
@@ -5476,6 +5504,97 @@ mod tests {
 
 		source_a1.finish();
 		source_a2.finish();
+	}
+
+	/// A locally published broadcast holds its path against any remote source. A
+	/// client that shares one origin between its publish and subscribe halves sees
+	/// its own announce echoed back by a relay that does no loop detection, and an
+	/// anonymous relay's echo carries an UNKNOWN first hop, so the exposure-based
+	/// reflection check (`excluded`) cannot recognize it. Without this rule the echo
+	/// evicts the local publisher and the client ends up subscribing to the relay
+	/// for its own broadcast.
+	#[tokio::test]
+	async fn test_remote_source_cannot_displace_a_local_publisher() {
+		tokio::time::pause();
+
+		let origin = Origin::random().produce();
+		let consumer = origin.consume();
+		let mut announced = consumer.announced();
+
+		// Published in this process: no hop chain.
+		let mut local = origin.create_broadcast("test", announce()).unwrap();
+		settle().await;
+		let face = announced.assert_next_some("test");
+
+		// The echo, as an anonymous relay reflects it.
+		let echo = OriginList::try_from(vec![Origin::UNKNOWN]).unwrap();
+		let mut remote = origin.create_broadcast("test", announce().with_hops(echo)).unwrap();
+		settle().await;
+		settle().await;
+		announced.assert_next_wait();
+		assert!(
+			consumer.get_broadcast("test").unwrap().is_clone(&face),
+			"the local publisher must keep the path"
+		);
+		assert!(consumer.get_broadcast("test").unwrap().route().hops.is_empty());
+
+		// The parked remote leaving changes nothing.
+		remote.finish();
+		settle().await;
+		settle().await;
+		announced.assert_next_wait();
+
+		// Once the local publisher ends, the path is free for a remote source again.
+		local.finish();
+		settle().await;
+		settle().await;
+		announced.assert_next_none("test");
+		let echo = OriginList::try_from(vec![Origin::UNKNOWN]).unwrap();
+		let _remote = origin
+			.create_broadcast("test", announce().with_hops(echo.clone()))
+			.unwrap();
+		settle().await;
+		settle().await;
+		announced.assert_next_some("test");
+		assert_eq!(consumer.get_broadcast("test").unwrap().route().hops, echo);
+	}
+
+	/// A parked remote retries when the local-publisher hold releases without the
+	/// front closing. If the local route unannounces while its source stays open,
+	/// the hold is gone and the waiting announced remote must take the path,
+	/// otherwise the path stays dark despite an available source.
+	#[tokio::test]
+	async fn test_parked_remote_retries_when_local_unannounces() {
+		tokio::time::pause();
+
+		let origin = Origin::random().produce();
+		let consumer = origin.consume();
+		let mut announced = consumer.announced();
+
+		let mut local = origin.create_broadcast("test", announce()).unwrap();
+		settle().await;
+		announced.assert_next_some("test");
+
+		// Parked by the local hold: the echo of our own announce.
+		let echo = OriginList::try_from(vec![Origin::UNKNOWN]).unwrap();
+		let _remote = origin
+			.create_broadcast("test", announce().with_hops(echo.clone()))
+			.unwrap();
+		settle().await;
+		settle().await;
+		announced.assert_next_wait();
+
+		// The local source stays open but stops announcing: cached content
+		// reachable by exact path is not a claim on the path.
+		local.set_route(broadcast::Route::new()).unwrap();
+		settle().await;
+		settle().await;
+
+		// The parked remote takes over: unannounce of the local front, then an
+		// announce for the remote one.
+		announced.assert_next_none("test");
+		announced.assert_next_some("test");
+		assert_eq!(consumer.get_broadcast("test").unwrap().route().hops, echo);
 	}
 
 	/// A repricing is not new content: a standby source must not use a cost-only
