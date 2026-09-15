@@ -5078,10 +5078,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "futures",
- "hex",
- "http-body",
  "http-cache-reqwest",
- "jsonwebtoken",
  "libc",
  "moq-auth",
  "moq-net",
@@ -5090,7 +5087,6 @@ dependencies = [
  "moq-tokio",
  "moq-uring",
  "qmux",
- "rand 0.10.2",
  "rcgen",
  "reqwest",
  "reqwest-middleware",
@@ -5099,7 +5095,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "sha2",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.20",
@@ -5112,7 +5107,6 @@ dependencies = [
  "url",
  "usage-rs",
  "web-transport-trait",
- "wiremock",
 ]
 
 [[package]]
