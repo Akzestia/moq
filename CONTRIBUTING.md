@@ -25,9 +25,10 @@ Fix any merge conflicts and failing CI checks.
 # AI
 
 AI-assisted issues, pull requests, reviews, and comments are welcome.
-GitHub issues are the public front door for brainstorming. Prefer a quest for work needing durable scope or coordination.
+Especially bug reports; dive deep into the root issue before proposing a solution.
 
-Add the AI marker `(Written by <model>)` to any posts on GitHub, excluding commit messages that contain `Co-Authored-By:` trailers.
+GitHub issues are the public front door for brainstorming.
+Prefer a quest for work needing durable scope or coordination.
 
 # Reviews
 
