@@ -48,8 +48,6 @@ additive quest that builds on dev-only code start on main afterwards from
 ## Required
 
 - [Auth server](/quest/m1/auth/README.md) - the breaking auth contract, flags, claims, and package names the release moq.pro adopts must carry
-- [Route cold cost](/quest/m1/route-cold-cost.md) - preserve both costs through the published binding record and C layout before release
-
 - [Worker ownership](/quest/m1/api-worker-ownership.md) - consuming split ownership retains sockets and joins the group before release
 - [Origin scope API](/quest/m1/api-origin-pattern-scopes.md) - typed scope grants preserve current prefixes and refuse unsupported patterns
 - [Token claims API](/quest/m1/api-token-claims.md) - working versioned claim types precede the v1 default rollout
