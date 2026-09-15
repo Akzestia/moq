@@ -117,7 +117,6 @@ hex = "0.4"
 # HMAC-SHA256 for the mDNS membership proofs (moq-tokio's `mdns` feature).
 hmac = "0.13"
 humantime = "2.3"
-humantime-serde = "1.1"
 io-uring = "0.7.14"
 jsonwebtoken = "11"
 kio = { version = "0.5.9", path = "rs/kio" }
@@ -139,7 +138,6 @@ moq-json = { version = "0.3.11", path = "rs/moq-json" }
 moq-loc = { version = "0.2.7", path = "rs/moq-loc" }
 moq-msf = { version = "0.4.2", path = "rs/moq-msf" }
 moq-mux = { version = "0.9.15", path = "rs/moq-mux" }
-moq-native = { version = "0.19.18", path = "rs/moq-native", default-features = false }
 moq-net = { version = "0.2.21", path = "rs/moq-net" }
 # NVENC bindings, forked from ViliamVadocz/nvidia-video-codec-sdk to dlopen the
 # driver at runtime. Compiles on any platform (macOS included) but only actually

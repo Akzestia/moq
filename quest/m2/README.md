@@ -58,7 +58,7 @@ before format-specific metadata. Unrelated areas can proceed in parallel.
 - [Play audio rendition gap](/quest/m2/play-audio-rendition-gap.md) - moq play: a retired audio rendition drains its sink before the replacement fills one, so the switch costs a `--delay` of silence
 - [JavaScript FETCH](/quest/m2/js-fetch.md) - generic on-demand group serving and IETF FETCH for browser publishers
 - [Archive](/quest/m2/archive/README.md) - record selected tracks to any object_store and replay them over FETCH or derived HLS, on the catalog and store the release ships
-- [Wildcard](/quest/m2/wildcard/README.md) - a relay resolves subscriptions against advertised patterns and the browser player treats a covering pattern as availability
+- [Wildcard](/quest/m2/wildcard/README.md) - a relay resolves subscriptions against advertised patterns, a service advertises a path pattern it could serve instead of enumerating broadcasts, and the browser player treats a covering pattern as availability
 - [#2152](/quest/m2/2152-libmoq-c-abi-catch-up-with-the-moq-ffi-surface.md) - libmoq serves tracks on demand and accepts sessions, the two moq-ffi calls C still lacks
 - [js/publish discontinuity](/quest/m2/js-publish-discontinuity.md) - the JS container producer and js/publish emit the same marker group on encoder restart
 - [Failure artifacts](/quest/m2/qa-failure-artifacts.md) - a failing harness run keeps its run directory and a Playwright trace, and CI uploads them
@@ -66,7 +66,6 @@ before format-specific metadata. Unrelated areas can proceed in parallel.
 - [Impaired path](/quest/m2/transport-impairment-profile.md) - the transport drills run over a seeded, impaired UDP path on any host
 - [Tooling](/quest/m2/tooling/README.md) - justfiles become a one-line menu over `sh/`, one impact map scopes CI, and every workflow step runs a recipe
 - [Generation](/quest/m2/hls-generation.md) - init URLs follow the rendition config and segment URLs carry an embedder-supplied generation, so caching can be re-enabled
-- [Wildcard](/quest/m2/wildcard/README.md) - a service advertises a path pattern it could serve instead of enumerating broadcasts
 - [Path patterns](/quest/m2/path-patterns/README.md) - one versioned matcher for every predicate over broadcast paths: tokens, origins, interest
 - [In-band auth](/quest/m2/auth/README.md) - a session tells its peer what it may publish and subscribe to, unions tokens presented in band, and fails loud on an out-of-scope publish
 - [Decoded frame ownership](/quest/m2/decoded-frames.md) - retain moq-video Frames across bindings, with native views or CPU conversion as needed

@@ -88,7 +88,6 @@ shape. Wire: none.
 
 ## Related
 
-- [Matcher](/quest/m2/path-patterns/matcher.md) - the pattern crate the
-  claims and grants carry; `moq-pattern` and `@moq/pattern` already exist on
-  dev (#3631), so this quest builds on them and Matcher closes when dev
-  merges
+- [Path patterns](/quest/m2/path-patterns/README.md) - the versioned matcher
+  the claims and grants carry; `moq-pattern` and `@moq/pattern` landed on
+  dev (#3631), so this quest builds on them

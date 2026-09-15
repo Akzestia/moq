@@ -9,7 +9,9 @@
 
 #![cfg(feature = "_quic")]
 
-use std::net::{SocketAddr, TcpListener, UdpSocket};
+#[cfg(target_os = "linux")]
+use std::net::UdpSocket;
+use std::net::{SocketAddr, TcpListener};
 use std::time::Duration;
 
 use moq_relay::{Config, PublicConfig, Relay};
@@ -24,6 +26,9 @@ fn free_tcp_port() -> u16 {
 	port
 }
 
+/// Only used by the Linux-only worker/uring tests below; without the gate the
+/// macOS test build fails `-D warnings` on dead code.
+#[cfg(target_os = "linux")]
 fn free_udp_port() -> u16 {
 	let probe = UdpSocket::bind("127.0.0.1:0").expect("bind probe");
 	let port = probe.local_addr().expect("local addr").port();
