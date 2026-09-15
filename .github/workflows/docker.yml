@@ -5,20 +5,19 @@ on:
     tags:
       - 'moq-relay-v*'
       - 'moq-cli-v*'
-      - 'moq-token-cli-v*'
   # Dry-run: build the image, push nothing. Nightly calls this so a broken
   # Dockerfile surfaces before the tag is cut. Off a tag there is no package to
   # derive, so the caller names one.
   workflow_call:
     inputs:
       package:
-        description: "Flake package to build (moq-relay, moq-cli, moq-token-cli)"
+        description: "Flake package to build (moq-relay, moq-cli)"
         required: true
         type: string
   workflow_dispatch:
     inputs:
       package:
-        description: "Flake package to build (moq-relay, moq-cli, moq-token-cli)"
+        description: "Flake package to build (moq-relay, moq-cli)"
         required: true
         type: string
         default: moq-relay

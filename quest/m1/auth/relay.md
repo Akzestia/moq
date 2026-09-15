@@ -89,5 +89,3 @@ additive). Wire: none.
   prefix-shaped restriction and resizes instead of closing on a narrower grant
 - [Relay tokens](/quest/m2/auth/relay-refresh.md) - an in-band token becomes
   a `connect` request through the same client
-- [Worker ownership](/quest/m1/api-worker-ownership.md) - the owner of the
-  worker group this composes in

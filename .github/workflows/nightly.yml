@@ -193,13 +193,6 @@ jobs:
       contents: write
       actions: write
 
-  release-moq-token-cli:
-    name: moq-token-cli
-    uses: ./.github/workflows/moq-token-cli.yml
-    permissions:
-      contents: write
-      actions: write
-
   release-moq-gst:
     name: moq-gst
     uses: ./.github/workflows/moq-gst.yml

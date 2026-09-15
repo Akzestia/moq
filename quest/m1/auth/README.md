@@ -117,17 +117,15 @@ deprecation window. Its quests live in that repository's tree.
 
 ### Order
 
-The package first, because the server and the relay both build on it; the
-server second, because the relay's tests run against it; the relay last, the
-largest change and the one that deletes the old path. This line gates
+The package landed first, because the server and the relay both build on it
+(`rs/moq-auth`, `js/auth`, `moq auth`); the server second, because the
+relay's tests run against it; the relay last, the largest change and the one
+that deletes the old path. This line gates
 [Merge dev](/quest/m1/merge-dev.md): it is a breaking change to flags, claims,
 and package names, and the release moq.pro adopts must carry it.
 
 ## Quests
 
-- [Package](/quest/m1/auth/package.md) - `moq-auth` and `@moq/auth` own the
-  request, the grant, the lease, the HTTP client, and the JWT that `moq-token`
-  used to own
 - [Serve](/quest/m1/auth/serve.md) - `moq auth serve` answers the contract
   with keys, public rules, an explicit mTLS grant, tiers, and session limits
 - [Relay](/quest/m1/auth/relay.md) - moq-relay and `moq --server-bind` admit
@@ -140,7 +138,5 @@ and package names, and the release moq.pro adopts must carry it.
   connection becomes a request through the same contract
 - [Origin scopes](/quest/m2/path-patterns/origin.md) - lifts the prefix-shaped
   restriction and resizes a live session on a narrower grant
-- [Worker ownership](/quest/m1/api-worker-ownership.md) - the owning worker
-  group the lease is composed in
 - [Connect auth race](/quest/m0/3532-connect-auth-race.md) - the client-side
   handling of a refusal, unchanged by this line

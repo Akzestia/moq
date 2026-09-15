@@ -2,7 +2,7 @@
 
 ## Goal
 
-Every predicate over a MoQ broadcast path uses one versioned matcher. Tokens,
+Every predicate over a MoQ broadcast path uses one matcher. Tokens,
 origin scopes, announce interests, public access rules, and wildcard
 advertisements can express `pid/*/chat` and `**/transcode.pro` without
 maintaining competing glob dialects.
@@ -52,7 +52,7 @@ the same tier.
 ### Ownership and compatibility
 
 `moq-pattern` and `@moq/pattern` own the grammar and algebra; `moq-net`,
-`moq-token`, `@moq/net`, and `@moq/token` re-export them. Literal `Path` types
+`moq-auth`, `@moq/net`, and `@moq/auth` re-export them. Literal `Path` types
 stay in `moq-net` / `@moq/net`. Golden cross-language vectors
 (`rs/moq-pattern/tests/pattern.json`), exhaustive small cases, randomized round
 trips, and the moq-net fuzz harness's `pattern` target prevent semantic drift at
@@ -79,20 +79,12 @@ CAT cannot represent `pid/*/chat`.
 
 - [Origin scopes](/quest/m2/path-patterns/origin.md) - literal origin roots
   carry arbitrary pattern unions without widening authorization
-- [Token SDKs](/quest/m2/path-patterns/token-sdk.md) - published libraries and
-  CLIs default new minting to v1 in a subsequent breaking dev cycle
-- [Relay auth](/quest/m2/path-patterns/relay-auth.md) - relay token, public,
-  static, and revalidation paths enforce patterns
 - [Pattern interest](/quest/m2/path-patterns/interest.md) - moq-lite-06 carries
   pattern grants in AUTH and full-pattern interest in ANNOUNCE_REQUEST
 
 ## Related
 
-- [Versioned token claims API](/quest/m1/api-token-claims.md) - owns the working v0/v1 library contract before release
-
 - [Wildcard advertisements](/quest/m2/wildcard/README.md) - routing adopts the
   matcher while retaining its own cost, pool, refusal, and resolution work
-- [mTLS explicit scope](/quest/m1/auth-api/mtls-scope.md) - an mTLS grant
-  uses the same versioned publish and subscribe pattern sets
 - [Auth server](/quest/m1/auth/README.md) - pattern claims and grants at
   the authorization boundary, prefix-shaped until Origin scopes lands
