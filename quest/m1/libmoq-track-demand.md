@@ -94,6 +94,6 @@ Remove the dynamic-track bullet from #2152 when this lands.
 
 ## Related
 
-- [#2152](/quest/m1/2152-libmoq-c-abi-catch-up-with-the-moq-ffi-surface.md) - the wider C ABI catch-up this splits out of
-- [#3190](/quest/m1/3190-align-origin-broadcast-creation-naming-across-language.md) - broadcast-level request serving on the C ABI
-- [#3000](/quest/m1/3000-track-teardown-on-poll-unused-is-not-atomic-against-a.md) - an unused edge is not terminal; the watcher must keep reporting after it
+- [#2152](/quest/m2/2152-libmoq-c-abi-catch-up-with-the-moq-ffi-surface.md) - the wider C ABI catch-up this splits out of
+- [#3190](https://github.com/moq-dev/moq/issues/3190) - broadcast-level request serving on the C ABI, shipped on dev in #3577
+- [#3000](https://github.com/moq-dev/moq/issues/3000) - an unused edge is not terminal; the watcher must keep reporting after it (fixed on dev in #3455)
