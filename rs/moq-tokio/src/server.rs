@@ -1513,12 +1513,6 @@ impl Request {
 	pub fn peer_identity(&self) -> Option<crate::tls::PeerIdentity> {
 		self.identity.clone()
 	}
-
-	#[doc(hidden)]
-	#[deprecated(note = "use `peer_identity` instead")]
-	pub fn has_peer_certificate(&self) -> bool {
-		self.peer_identity().is_some()
-	}
 }
 
 #[cfg(test)]
@@ -1831,12 +1825,19 @@ mod tests {
 
 	#[test]
 	fn bind_string_or_listen_alias() {
-		// The QUIC bind is a plain address; the `listen` alias still works.
 		let bind: crate::listen::Config = toml::from_str(r#"bind = "[::]:443""#).unwrap();
 		assert_eq!(bind.bind.as_deref(), Some("[::]:443"));
+		assert!(bind.deprecated().is_empty());
 
+		// The released key still parses so the process can name `bind`, but it
+		// configures nothing.
 		let alias: crate::listen::Config = toml::from_str(r#"listen = "0.0.0.0:4443""#).unwrap();
-		assert_eq!(alias.bind.as_deref(), Some("0.0.0.0:4443"));
+		assert_eq!(alias.bind, None);
+		assert!(
+			alias.deprecated().to_string().contains("listen -> bind"),
+			"{}",
+			alias.deprecated()
+		);
 	}
 
 	#[cfg(all(feature = "uds", unix))]
