@@ -29,7 +29,6 @@ does not require it.
 - [Cluster peer API](/quest/m1/api-cluster-peer-config.md) - typed peer configuration supports current symmetric policy
 - [Publisher finish borrows](/quest/m1/api-finish-borrow.md) - finish borrows the handle so abort can still run after a clean end
 - [Rate estimate names](/quest/m1/api-rate-estimate-names.md) - the send and receive estimates carry `estimated_*_rate` on the C ABI, every binding, and moqsink
-- [Announce names](/quest/m1/api-announce-names.md) - one name per announce, request, and origin config concept in Rust, JS, moq-ffi, and C
 - [moq-tokio names](/quest/m1/api-tokio-names.md) - moq-tokio's public names sit under their modules with no root compounds, adapter names, or forgettable close()
 - [Anonymous rank](/quest/m1/anonymous-route-rank.md) - moq-net: a route through an anonymous hop ranks below every identified route at any cost, and hop 0 travels the chain to say so
 - [Cluster -01](/quest/m1/cluster-01/README.md) - rs/moq-net and js/net speak the revised cluster extension (HOP_ID, REQUEST_UPDATE repricing) and -01 is published
