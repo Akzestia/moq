@@ -5,7 +5,7 @@ import type { Probe as ProbeStats } from "../connection/stats.ts";
 import { BroadcastCache } from "../consume.ts";
 import { error, ProtocolViolation, reason, StreamCode, StreamError } from "../error.ts";
 import * as netGroup from "../group.ts";
-import { Cost, type Hop, Route, routesEqual, UNKNOWN_HOP } from "../hop.ts";
+import { Cost, type Hop, isAnonymous, MAX_HOPS, type Route, routesEqual, UNKNOWN_HOP } from "../hop.ts";
 import { scopePrefix } from "../internal.ts";
 import * as Path from "../path.ts";
 import { type Reader, Stream } from "../stream.ts";
@@ -197,11 +197,10 @@ export class Subscriber {
 			let responderOrigin: Hop | undefined;
 			if (hasAnnounceOk(this.version)) {
 				const ok = await AnnounceOk.decode(stream.reader, this.version);
-				// A responder that withholds its identity sends the reserved 0. It names
-				// nobody, so folding it into a chain would stamp a placeholder that cannot
-				// close a loop or tell two publishers apart. Treat it as absent instead,
-				// which is the loop-blind route the draft describes.
-				responderOrigin = ok.hop === UNKNOWN_HOP ? undefined : ok.hop;
+				// Keep a withheld 0: it names nobody for loop detection, but it is the
+				// anonymous mark and must travel the reconstructed chain. Assigned identities
+				// stay off this hop and are never forwarded.
+				responderOrigin = ok.hop;
 			}
 
 			// Every advertisement the peer currently has live, keyed by suffix (at most one
@@ -238,7 +237,8 @@ export class Subscriber {
 						}
 						advertised.set(pattern.text, { publisher: undefined, live: true });
 						console.debug(`announced: broadcast=${claim.text} active=true`);
-						announced.append({ pattern: claim, active: true, route: Route.default });
+						const route = { hops: [UNKNOWN_HOP], cost: Cost.zero };
+						announced.append({ pattern: claim, active: true, route, anonymous: isAnonymous(route) });
 					}
 					break;
 				}
@@ -389,8 +389,20 @@ export class Subscriber {
 				// `publisher == Hop::UNKNOWN` arm of the Rust `restart_announce`.
 				const identified = publisher !== undefined && publisher !== UNKNOWN_HOP;
 				const fullHops =
-					hops !== undefined && responderOrigin !== undefined ? [...hops, responderOrigin] : (hops ?? []);
+					hops !== undefined && responderOrigin !== undefined
+						? [...hops, responderOrigin]
+						: [...(hops ?? [])];
+				// A received empty list is the anonymous mark, not a local announcement.
+				if (fullHops.length === 0) fullHops.push(UNKNOWN_HOP);
+				// Appending a withheld AnnounceOk(0) onto a 32-entry list is the same
+				// drop Rust's Hops::push makes: do not expose an overlong chain.
+				if (fullHops.length > MAX_HOPS) {
+					console.debug(`announced: broadcast=${claim.text} dropped (hop chain at MAX_HOPS)`);
+					advertised.set(pattern.text, { publisher: undefined, live: false });
+					continue;
+				}
 				const route: Route = { hops: fullHops, cost: cost ?? Cost.zero };
+				const anonymous = isAnonymous(route);
 
 				// A second advertisement for a path we already carry is a restart: either an
 				// explicit ANNOUNCE_UPDATE, or (lite-05) a duplicate ANNOUNCE.
@@ -402,7 +414,7 @@ export class Subscriber {
 						if (!routesEqual(previous.route, route)) {
 							advertised.set(pattern.text, { publisher, live: true, route });
 							console.debug(`announced: broadcast=${claim.text} rerouted`);
-							announced.append({ pattern: claim, active: true, route });
+							announced.append({ pattern: claim, active: true, route, anonymous });
 						} else {
 							console.debug(`announced: broadcast=${claim.text} rerouted`);
 						}
@@ -420,7 +432,7 @@ export class Subscriber {
 				advertised.set(pattern.text, { publisher, live: true, route });
 
 				console.debug(`announced: broadcast=${claim.text} active=true`);
-				announced.append({ pattern: claim, active: true, route });
+				announced.append({ pattern: claim, active: true, route, anonymous });
 			}
 
 			announced.close();
