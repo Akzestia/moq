@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every received protocol code is `Error::Session` / `Error::Stream`, preserving
   its registry and numeric value, including cancellation and internal-error codes.
 
+## [0.2.22](https://github.com/moq-dev/moq/compare/moq-net-v0.2.21...moq-net-v0.2.22) - 2026-09-17
+
+### Fixed
+
+- *(moq-net)* a remote source never displaces a local publisher ([#3694](https://github.com/moq-dev/moq/pull/3694))
+
 ## [0.2.21](https://github.com/moq-dev/moq/compare/moq-net-v0.2.20...moq-net-v0.2.21) - 2026-09-13
 
 ### Fixed

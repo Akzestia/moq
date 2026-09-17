@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(relay)* `Cluster::with_cache`; pass the cache to `Cluster::new` via `ClusterOptions`
 - *(relay)* [**breaking**] public `Relay` fields (`server`, `workers`, `uring`, and the rest). Use the accessors and `run`.
 
+## [0.14.18](https://github.com/moq-dev/moq/compare/moq-relay-v0.14.17...moq-relay-v0.14.18) - 2026-09-17
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.14.17](https://github.com/moq-dev/moq/compare/moq-relay-v0.14.16...moq-relay-v0.14.17) - 2026-09-13
 
 ### Added
