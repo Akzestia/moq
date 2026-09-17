@@ -35,7 +35,6 @@ does not require it.
 - [moq-tokio names](/quest/m1/api-tokio-names.md) - moq-tokio's public names sit under their modules with no root compounds, adapter names, or forgettable close()
 - [JSON config names](/quest/m1/api-json-binary-config-names.md) - `Config` means the codec options and `producer::Config` / `consumer::Config` the track pair in all four json and binary packages
 - [Deprecated sweep](/quest/m1/deprecated-sweep.md) - uncalled deprecated items, warn-then-ignore flags, and silent aliases are removed or become refusals before the release
-- [Joining FETCH](/quest/m1/joining-fetch.md) - moq-net: every subscribe to a draft-14 to draft-19 relay joins at a group boundary, with contiguous history for an explicit start, via Largest Object plus a joining FETCH
 - [Anonymous rank](/quest/m1/anonymous-route-rank.md) - moq-net: a route through an anonymous hop ranks below every identified route at any cost, and hop 0 travels the chain to say so
 - [Cluster -01](/quest/m1/cluster-01/README.md) - rs/moq-net and js/net speak the revised cluster extension (HOP_ID, REQUEST_UPDATE repricing) and -01 is published
 - [Track demand](/quest/m1/libmoq-track-demand.md) - a C publisher sees used/unused per track and serves dynamic track and group requests, so an encoder runs only while someone watches
