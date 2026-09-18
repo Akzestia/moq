@@ -1174,6 +1174,24 @@ impl Producer {
 		&self.broadcast
 	}
 
+	/// Cache an already-produced group without rewriting its frames.
+	///
+	/// Used by an origin front to keep a warm copy of groups it already delivered
+	/// after dropping the source track that produced them.
+	pub(crate) fn adopt_group(&mut self, group: group::Producer, visible: bool) -> Result<()> {
+		let mut state = self.modify()?;
+		if let Some(fin) = state.final_sequence
+			&& group.sequence >= fin
+		{
+			return Err(Error::Closed);
+		}
+		if state.lookup.contains_key(&group.sequence) {
+			return Err(Error::Duplicate);
+		}
+		state.insert_group(&group, visible);
+		Ok(())
+	}
+
 	/// Create a new group with the given sequence number.
 	pub fn create_group(&self, group: group::Info) -> Result<group::Producer> {
 		let mut state = self.modify()?;
@@ -2186,6 +2204,28 @@ impl Consumer {
 	pub(crate) fn with_broadcast(mut self, broadcast: Arc<broadcast::Info>) -> Self {
 		self.broadcast = broadcast;
 		self
+	}
+
+	/// Groups this copy still holds, so an origin can keep them after dropping the source.
+	pub(crate) fn cached_groups(&self) -> Vec<(group::Producer, bool)> {
+		match &self.inner {
+			ConsumerKind::Plain(state) => state
+				.read()
+				.lookup
+				.values()
+				.filter(|slot| !slot.group.is_aborted())
+				.map(|slot| (slot.group.clone(), slot.visible))
+				.collect(),
+			ConsumerKind::Spliced(_) => Vec::new(),
+		}
+	}
+
+	/// Publisher properties already resolved on this copy, if any.
+	pub(crate) fn cached_info(&self) -> Option<Info> {
+		match &self.inner {
+			ConsumerKind::Plain(state) => state.read().info.clone(),
+			ConsumerKind::Spliced(_) => None,
+		}
 	}
 
 	/// The track name this handle is bound to.

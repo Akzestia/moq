@@ -248,12 +248,12 @@ async fn subscribe(origin: &moq_net::origin::Consumer, path: &str) -> Reader {
 /// subscription fed are released rather than left parked for a reader that will
 /// never return, and the relay keeps serving everyone else.
 ///
-/// What it deliberately does not assert is the publisher going idle. The relay
-/// holds an upstream subscription for `TRACK_IDLE_LINGER` (30s in moq-net) after
-/// its last local reader leaves, so a viewer who comes back does not pay for a
-/// fresh upstream subscribe. Waiting that out would make this the slowest test
-/// in the workspace to observe a deliberate delay; the rejoin below is the half
-/// of that behavior worth grading.
+/// What it deliberately does not assert is the publisher going idle. That
+/// edge is the origin front's: it drops the source track when the last local
+/// reader leaves, and is covered by moq-net's origin tests. This drill grades
+/// the cancel itself: the stalled reader's handles release, and everyone else
+/// keeps being served. The rejoin below is the half of that behavior worth
+/// grading here.
 #[tokio::test]
 async fn cancel_under_backpressure_releases_the_reader() {
 	let relay = RelayHost::start(None).await;

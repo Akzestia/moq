@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `group::Producer::used` waits until the group has a consumer, matching `unused`.
 
+### Fixed
+
+- An origin front drops the source track when its last reader leaves, instead of holding the upstream copy for `TRACK_IDLE_LINGER`.
+
 ### Changed
 
 - [**breaking**] Dead exports removed: `Hops::replace_first`, `origin::Dynamic::{hop, root}`, `DRAIN_COST` / `MAX_COST` (use `Cost::{DRAIN, MAX}`), `broadcast::Producer::remove_track`, `track::Producer::start_sequence`, `Subscriber::with_groups`, `Ordered::with_groups`, `group::Consumer::with_frames`, `cache::Pool::same_pool`, `Timestamp::new_const`, `Error::to_code`. `Route::with_hop` and `Cost: From<(u64, u64)>` stay; libmoq and moq-ffi still call them.
