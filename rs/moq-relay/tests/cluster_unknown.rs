@@ -37,7 +37,7 @@ async fn spawn_relay(
 		config.auth.public = vec![moq_auth::Pattern::all()];
 	}
 	config.cluster.id = Some(id);
-	config.cluster.connect = connect;
+	config.cluster.connect = connect.into_iter().map(moq_relay::cluster::Peer::new).collect();
 
 	let relay = Relay::load(config).await.expect("relay load");
 	let handle = tokio::spawn(async move {

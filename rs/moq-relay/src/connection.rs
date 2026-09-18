@@ -1,4 +1,4 @@
-use crate::{Admitted, Auth, AuthError, AuthToken, Cluster, Lease};
+use crate::{auth, cluster};
 
 use axum::http;
 use moq_auth::Grant;
@@ -14,8 +14,8 @@ struct StatusError {
 	source: anyhow::Error,
 }
 
-impl From<AuthError> for StatusError {
-	fn from(err: AuthError) -> Self {
+impl From<auth::Error> for StatusError {
+	fn from(err: auth::Error) -> Self {
 		Self {
 			status: (&err).into(),
 			source: err.into(),
@@ -34,24 +34,24 @@ pub struct Connection {
 	/// The raw QUIC/WebTransport request to accept or reject.
 	request: Request,
 	/// The cluster state used to resolve origins.
-	cluster: Cluster,
+	cluster: cluster::Cluster,
 	/// Where the session's grant comes from.
-	auth: Auth,
+	auth: auth::Auth,
 	/// Relay-wide shutdown broadcast: when it fires, the session is drained with
 	/// a GOAWAY instead of being cut off.
-	shutdown: crate::Shutdown,
+	shutdown: crate::shutdown::Observer,
 }
 
 impl Connection {
 	/// Wrap an accepted request, resolving origins through `cluster` and
 	/// its grant through `auth`.
-	pub fn new(request: Request, cluster: Cluster, auth: Auth) -> Self {
+	pub fn new(request: Request, cluster: cluster::Cluster, auth: auth::Auth) -> Self {
 		Self {
 			id: 0,
 			request,
 			cluster,
 			auth,
-			shutdown: crate::Shutdown::disabled(),
+			shutdown: crate::shutdown::Observer::disabled(),
 		}
 	}
 
@@ -63,7 +63,7 @@ impl Connection {
 
 	/// Attach the relay-wide shutdown broadcast so the session drains with a
 	/// GOAWAY when it fires. Without it the session is cut off on process exit.
-	pub fn with_shutdown(mut self, shutdown: crate::Shutdown) -> Self {
+	pub fn with_shutdown(mut self, shutdown: crate::shutdown::Observer) -> Self {
 		self.shutdown = shutdown;
 		self
 	}
@@ -73,7 +73,7 @@ impl Connection {
 	pub async fn run(self) -> anyhow::Result<()> {
 		let peer_hop = self.request.peer_hop();
 		let bytes = moq_auth::Counters::default();
-		let Admitted { lease, token } = match self.admit(bytes.clone()).await {
+		let auth::Admitted { lease, token } = match self.admit(bytes.clone()).await {
 			Ok(admitted) => admitted,
 			Err(err) => {
 				let _ = self.request.close(err.status.as_u16()).await;
@@ -119,15 +119,15 @@ impl Connection {
 	/// Every transport goes through the same lease; the request the server sees
 	/// carries what the transport knows. A LAN mesh dial is the one exception: its
 	/// credential is a secret the relay minted for itself, checked locally.
-	async fn admit(&self, bytes: moq_auth::Counters) -> Result<Admitted, StatusError> {
+	async fn admit(&self, bytes: moq_auth::Counters) -> Result<auth::Admitted, StatusError> {
 		// Checked first so a `/.cluster` request is never routed through the public
 		// grant, and a relay without LAN discovery refuses it instead of treating the
 		// path as a broadcast root.
-		if Cluster::is_lan_path(self.request.path()) {
+		if cluster::Cluster::is_lan_path(self.request.path()) {
 			return self.admit_lan();
 		}
 
-		let request = crate::request_for(&self.auth, &self.request);
+		let request = auth::request_for(&self.auth, &self.request);
 		tracing::Span::current().record("session", &request.id);
 		if self.request.peer_identity().is_some() {
 			tracing::debug!("client certificate verified; reported to the auth server");
@@ -136,8 +136,8 @@ impl Connection {
 	}
 
 	/// Authorize a `/.cluster/<credential>` dial against the live LAN advertisement.
-	fn admit_lan(&self) -> Result<Admitted, StatusError> {
-		let Some(presented) = Cluster::lan_credential(self.request.path()) else {
+	fn admit_lan(&self) -> Result<auth::Admitted, StatusError> {
+		let Some(presented) = cluster::Cluster::lan_credential(self.request.path()) else {
 			return Err(StatusError {
 				status: http::StatusCode::FORBIDDEN,
 				source: anyhow::anyhow!("LAN peer did not present a membership proof"),
@@ -182,8 +182,8 @@ pub(crate) struct Grants {
 /// instead of being accepted and then silently carrying no media (the bug
 /// that motivated the role hint).
 pub(crate) fn authorize(
-	cluster: &Cluster,
-	token: &AuthToken,
+	cluster: &cluster::Cluster,
+	token: &auth::Token,
 	role: Option<moq_net::Role>,
 	transport: &dyn std::fmt::Display,
 ) -> anyhow::Result<Grants> {
@@ -256,7 +256,7 @@ pub(crate) enum Recheck {
 /// the origin cannot be resized in place until pattern scopes land. A changed tier
 /// is kept for this session and applies to its next connection, since the stats
 /// carriers resolve their counters once at admission.
-pub(crate) fn recheck(token: &AuthToken, grant: &Grant) -> Recheck {
+pub(crate) fn recheck(token: &auth::Token, grant: &Grant) -> Recheck {
 	let fresh = match token.recheck(grant) {
 		Ok(fresh) => fresh,
 		Err(err) => {
@@ -291,10 +291,10 @@ pub(crate) fn recheck(token: &AuthToken, grant: &Grant) -> Recheck {
 /// runs on the shared runtime even for sessions a pinned QUIC worker drives.
 pub async fn supervise(
 	session: moq_net::Session,
-	mut lease: Lease,
-	token: AuthToken,
+	mut lease: auth::Lease,
+	token: auth::Token,
 	bytes: moq_auth::Counters,
-	mut shutdown: crate::Shutdown,
+	mut shutdown: crate::shutdown::Observer,
 ) -> anyhow::Result<()> {
 	// The transport's own totals, read once at the end so the `end` event carries
 	// what the session moved without the payload path paying for a second meter.

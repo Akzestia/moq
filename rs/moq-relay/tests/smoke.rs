@@ -9,7 +9,7 @@
 
 use std::{net::TcpListener, time::Duration};
 
-use moq_relay::{AuthConfig, Cluster, ClusterOptions, Config, Connection, Relay, Web, WebConfig};
+use moq_relay::{Config, Connection, Relay, auth, cluster, web};
 use moq_tokio::moq_net::{self, Hop};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,27 +29,27 @@ fn newest_lite_version() -> moq_net::Version {
 		.expect("parse newest lite ALPN as a Version")
 }
 
-async fn build_web(port: u16, ws: bool) -> Web {
-	let mut config = WebConfig::default();
+async fn build_web(port: u16, ws: bool) -> web::Web {
+	let mut config = web::Config::default();
 	config.ws = ws;
 	config.http.listen = Some(format!("127.0.0.1:{port}").parse().expect("parse listen"));
 	build_web_with(config).await
 }
 
 /// [`build_web`] for a test that configures the listeners itself (e.g. HTTPS).
-async fn build_web_with(web_config: WebConfig) -> Web {
+async fn build_web_with(web_config: web::Config) -> web::Web {
 	// Crypto provider is process-global; reinstalls after the first one are
 	// no-ops, but the test binary may run before any other moq code does.
 	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
 	// A public grant of `**` lets any path through.
-	let mut auth_config = AuthConfig::default();
+	let mut auth_config = auth::Config::default();
 	auth_config.public = vec![moq_auth::Pattern::all()];
 	let auth = auth_config
 		.init("test", &moq_tokio::tls::Connect::default())
 		.expect("auth init");
 
-	let cluster = Cluster::new(ClusterOptions::default()).expect("cluster init");
+	let cluster = cluster::Cluster::new(cluster::Options::default()).expect("cluster init");
 
 	// moq_tokio::Server is needed for `certificates`, even though we never
 	// expose HTTPS or QUIC in this test. Binding QUIC to `[::]:0` picks an
@@ -59,7 +59,7 @@ async fn build_web_with(web_config: WebConfig) -> Web {
 	server_config.tls.generate = vec!["localhost".into()];
 	let server = server_config.init(Default::default()).expect("server init");
 
-	Web::new(auth, cluster, server.certificates(), web_config)
+	web::Web::new(auth, cluster, server.certificates(), web_config)
 }
 
 fn free_tcp_port() -> u16 {
@@ -317,7 +317,7 @@ async fn relay_https_terminates_tls() {
 	std::fs::write(&cert_path, cert.pem()).expect("write cert");
 	std::fs::write(&key_path, key.serialize_pem()).expect("write key");
 
-	let mut config = WebConfig::default();
+	let mut config = web::Config::default();
 	config.ws = false;
 	config.https.listen = Some(format!("127.0.0.1:{port}").parse().expect("parse listen"));
 	config.https.cert = vec![cert_path];
@@ -518,7 +518,7 @@ async fn two_publish_only_clients_coexist() {
 /// asked for an ephemeral port can dial it.
 async fn spawn_accept_relay(
 	config: moq_tokio::listen::Config,
-	auth_config: AuthConfig,
+	auth_config: auth::Config,
 ) -> (Option<std::net::SocketAddr>, tokio::task::JoinHandle<()>) {
 	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
@@ -529,7 +529,7 @@ async fn spawn_accept_relay(
 		.init("test", &moq_tokio::tls::Connect::default())
 		.expect("auth init");
 
-	let cluster = Cluster::new(ClusterOptions::default()).expect("cluster init");
+	let cluster = cluster::Cluster::new(cluster::Options::default()).expect("cluster init");
 	let mut server = server.listen().await.expect("listen");
 
 	let handle = tokio::spawn(async move {
@@ -537,7 +537,7 @@ async fn spawn_accept_relay(
 		while let Some(request) = server.accept().await {
 			let conn = Connection::new(request, cluster.clone(), auth.clone())
 				.with_id(id)
-				.with_shutdown(moq_relay::Shutdown::disabled());
+				.with_shutdown(moq_relay::shutdown::Observer::disabled());
 			id += 1;
 			tokio::spawn(async move {
 				let _ = conn.run().await;
@@ -562,7 +562,7 @@ async fn spawn_internal_relay() -> (u16, tokio::task::JoinHandle<()>) {
 	config.tcp.bind = Some(format!("127.0.0.1:{port}").parse().expect("parse addr"));
 
 	// Public Simple([""]) lets any no-JWT stream client through at the root.
-	let mut auth_config = AuthConfig::default();
+	let mut auth_config = auth::Config::default();
 	auth_config.public = vec![moq_auth::Pattern::all()];
 
 	let (_, handle) = spawn_accept_relay(config, auth_config).await;
@@ -676,7 +676,7 @@ async fn spawn_internal_unix_relay() -> (std::path::PathBuf, tokio::task::JoinHa
 	config.unix.bind = Some(path.clone());
 
 	// Public Simple([""]) lets any no-JWT stream client through at the root.
-	let mut auth_config = AuthConfig::default();
+	let mut auth_config = auth::Config::default();
 	auth_config.public = vec![moq_auth::Pattern::all()];
 
 	let (_, handle) = spawn_accept_relay(config, auth_config).await;
@@ -893,7 +893,7 @@ async fn spawn_quic_relay() -> (std::net::SocketAddr, tokio::task::JoinHandle<()
 	config.bind = Some("127.0.0.1:0".to_string());
 	config.tls.generate = vec!["localhost".into()];
 
-	let mut auth_config = AuthConfig::default();
+	let mut auth_config = auth::Config::default();
 	auth_config.public = vec![moq_auth::Pattern::all()];
 
 	let (addr, handle) = spawn_accept_relay(config, auth_config).await;
@@ -952,7 +952,7 @@ async fn spawn_subscribe_only_relay() -> (u16, tokio::task::JoinHandle<()>) {
 	config.tcp.bind = Some(format!("127.0.0.1:{port}").parse().expect("parse addr"));
 
 	// Subscribe-only public access: the root is granted for subscribing, never publishing.
-	let mut auth_config = AuthConfig::default();
+	let mut auth_config = auth::Config::default();
 	auth_config.public_subscribe = vec![moq_auth::Pattern::all()];
 
 	let (_, handle) = spawn_accept_relay(config, auth_config).await;
@@ -1041,7 +1041,7 @@ async fn spawn_publish_only_relay() -> (u16, tokio::task::JoinHandle<()>) {
 	config.tcp.bind = Some(format!("127.0.0.1:{port}").parse().expect("parse addr"));
 
 	// Publish-only public access: the root is granted for publishing, never subscribing.
-	let mut auth_config = AuthConfig::default();
+	let mut auth_config = auth::Config::default();
 	auth_config.public_publish = vec![moq_auth::Pattern::all()];
 
 	let (_, handle) = spawn_accept_relay(config, auth_config).await;

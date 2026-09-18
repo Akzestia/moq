@@ -15,7 +15,7 @@ use axum::{
 use moq_net::origin;
 use moq_net::stats::Session;
 
-use crate::{Admitted, AuthToken, Lease, web::MtlsPeer, web::WebState, web::landing_response};
+use crate::{auth, web::MtlsPeer, web::WebState, web::landing_response};
 
 // One axum extractor per fact the upgrade needs; there is no struct to fold them into.
 #[allow(clippy::too_many_arguments)]
@@ -55,10 +55,10 @@ pub(crate) async fn serve_ws(
 		.map(|a| a.host().to_ascii_lowercase());
 	request.remote = Some(remote.0);
 	request.alpn = ws.selected_protocol().and_then(|p| p.to_str().ok()).map(str::to_owned);
-	request.tls = mtls.and_then(|Extension(MtlsPeer(identity))| crate::peer(&identity));
+	request.tls = mtls.and_then(|Extension(MtlsPeer(identity))| auth::peer(&identity));
 	let bytes = moq_auth::Counters::default();
 	let session_id = request.id.clone();
-	let Admitted { lease, token } = state.auth.admit(request, bytes.clone()).await?;
+	let auth::Admitted { lease, token } = state.auth.admit(request, bytes.clone()).await?;
 	let publish = state.cluster.publisher(&token);
 	let subscribe = state.cluster.subscriber(&token);
 	let stats = state.cluster.stats.tier(token.tier.clone()).session(&token.root);
@@ -104,7 +104,7 @@ struct SessionInputs {
 	publish: Option<origin::Producer>,
 	subscribe: Option<origin::Producer>,
 	stats: Session,
-	shutdown: crate::Shutdown,
+	shutdown: crate::shutdown::Observer,
 	/// The kernel's view of the socket under the upgrade, captured at accept time.
 	socket_stats: Option<crate::web::SocketStats>,
 }
@@ -114,8 +114,8 @@ struct SessionInputs {
 async fn handle_socket<T>(
 	socket: T,
 	session: SessionInputs,
-	mut lease: Lease,
-	token: AuthToken,
+	mut lease: auth::Lease,
+	token: auth::Token,
 	bytes: moq_auth::Counters,
 ) -> anyhow::Result<()>
 where
@@ -942,16 +942,16 @@ mod tests {
 			publish: None,
 			subscribe: None,
 			stats: Session::default(),
-			shutdown: crate::Shutdown::disabled(),
+			shutdown: crate::shutdown::Observer::disabled(),
 			// No descriptor to hand over: this drives the transport directly rather
 			// than through an accepted socket.
 			socket_stats: None,
 		};
-		let lease = crate::Lease::fixed(moq_auth::Grant::new(
+		let lease = crate::auth::Lease::fixed(moq_auth::Grant::new(
 			[moq_auth::Pattern::all()].into_iter().collect(),
 			[moq_auth::Pattern::all()].into_iter().collect(),
 		));
-		let token = crate::AuthToken::new("/", &lease.grant()).expect("token");
+		let token = crate::auth::Token::new("/", &lease.grant()).expect("token");
 		let server = tokio::spawn(handle_socket(
 			Pipe::new(server_incoming, server_to_client, frozen.clone()),
 			session,

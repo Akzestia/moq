@@ -21,7 +21,7 @@ use std::task::Poll;
 
 use anyhow::Context as _;
 
-use crate::{Admitted, Auth, Cluster, Shutdown};
+use crate::{auth, cluster, shutdown};
 
 /// One member's bound socket and its slot in the steered group.
 struct Member {
@@ -62,9 +62,9 @@ impl Stop {
 /// Everything a worker needs to serve a connection, cloned per thread.
 #[derive(Clone)]
 struct Serve {
-	cluster: Cluster,
-	auth: Auth,
-	shutdown: Shutdown,
+	cluster: cluster::Cluster,
+	auth: auth::Auth,
+	shutdown: shutdown::Observer,
 	/// The shared runtime, which owns authentication (the auth API's HTTP
 	/// client needs its reactor) and session supervision.
 	tokio: tokio::runtime::Handle,
@@ -293,7 +293,12 @@ impl Workers {
 	/// authentication and session supervision. Returns once every worker is
 	/// serving; a worker that cannot start (an old kernel, a ring failure) is
 	/// an error here rather than a thread that quietly died.
-	pub fn serve(&mut self, cluster: Cluster, auth: Auth, shutdown: Shutdown) -> anyhow::Result<()> {
+	pub fn serve(
+		&mut self,
+		cluster: cluster::Cluster,
+		auth: auth::Auth,
+		shutdown: shutdown::Observer,
+	) -> anyhow::Result<()> {
 		let serve = Serve {
 			cluster,
 			auth,
@@ -666,8 +671,8 @@ async fn serve_connection(
 	};
 	let path = if path.is_empty() { "/".to_string() } else { path };
 	let bytes = moq_auth::Counters::default();
-	let Admitted { lease, token } = if Cluster::is_lan_path(&path) {
-		match Cluster::lan_credential(&path) {
+	let auth::Admitted { lease, token } = if cluster::Cluster::is_lan_path(&path) {
+		match cluster::Cluster::lan_credential(&path) {
 			Some(presented) => match serve.cluster.verify_lan_credential(presented) {
 				Some(true) => serve
 					.auth

@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use moq_auth::{Event, Grant, Pattern, Patterns, Request};
-use moq_relay::{AuthConfig, Cluster, ClusterOptions, Config, Connection, Relay, Web, WebConfig};
+use moq_relay::{Config, Connection, Relay, auth, cluster, web};
 use moq_tokio::moq_net::{self, Hop};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -116,8 +116,8 @@ fn grant(expires_in: Duration) -> Grant {
 }
 
 /// An `Auth` asking the server at `url`.
-fn build_auth(url: url::Url) -> moq_relay::Auth {
-	let mut config = AuthConfig::default();
+fn build_auth(url: url::Url) -> moq_relay::auth::Auth {
+	let mut config = auth::Config::default();
 	config.url = Some(url);
 	config
 		.init("test-relay", &moq_tokio::tls::Connect::default())
@@ -143,7 +143,7 @@ fn free_port() -> u16 {
 
 /// Stand up the relay's accept loop on a plain-TCP qmux listener and return the
 /// port plus an abort handle.
-async fn spawn_relay(auth: moq_relay::Auth) -> (u16, tokio::task::JoinHandle<()>) {
+async fn spawn_relay(auth: moq_relay::auth::Auth) -> (u16, tokio::task::JoinHandle<()>) {
 	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 	let port = free_port();
 
@@ -151,7 +151,7 @@ async fn spawn_relay(auth: moq_relay::Auth) -> (u16, tokio::task::JoinHandle<()>
 	config.tcp.bind = Some(format!("127.0.0.1:{port}").parse().expect("parse addr"));
 	let server = config.init(Default::default()).expect("server init");
 	let mut server = server.listen().await.expect("listen");
-	let cluster = Cluster::new(ClusterOptions::default()).expect("cluster init");
+	let cluster = cluster::Cluster::new(cluster::Options::default()).expect("cluster init");
 
 	let handle = tokio::spawn(async move {
 		let mut id = 0;
@@ -170,10 +170,10 @@ async fn spawn_relay(auth: moq_relay::Auth) -> (u16, tokio::task::JoinHandle<()>
 
 /// Stand up the relay's axum web stack with WebSocket enabled and return the
 /// port plus an abort handle.
-async fn spawn_ws_relay(auth: moq_relay::Auth) -> (u16, tokio::task::JoinHandle<()>) {
+async fn spawn_ws_relay(auth: moq_relay::auth::Auth) -> (u16, tokio::task::JoinHandle<()>) {
 	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 	let port = free_port();
-	let cluster = Cluster::new(ClusterOptions::default()).expect("cluster init");
+	let cluster = cluster::Cluster::new(cluster::Options::default()).expect("cluster init");
 
 	// Stream listeners bind lazily, so this server never opens a socket; only
 	// its certificate handle is used.
@@ -185,10 +185,10 @@ async fn spawn_ws_relay(auth: moq_relay::Auth) -> (u16, tokio::task::JoinHandle<
 		.expect("server init")
 		.certificates();
 
-	let mut web_config = WebConfig::default();
+	let mut web_config = web::Config::default();
 	web_config.ws = true;
 	web_config.http.listen = Some(format!("127.0.0.1:{port}").parse().expect("parse listen"));
-	let web = Web::new(auth, cluster, certificates, web_config);
+	let web = web::Web::new(auth, cluster, certificates, web_config);
 
 	let handle = tokio::spawn(async move {
 		let _ = web.run().await;
@@ -312,7 +312,7 @@ async fn assert_refused_with(client: moq_tokio::Client, url: &url::Url) {
 
 /// A QUIC relay, verifying client certificates against `root` when given.
 async fn spawn_quic_relay(
-	auth: moq_relay::Auth,
+	auth: moq_relay::auth::Auth,
 	root: Option<std::path::PathBuf>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
 	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -323,7 +323,7 @@ async fn spawn_quic_relay(
 	let server = config.init(Default::default()).expect("server init");
 	let addr = server.local_addr().expect("quic addr");
 	let mut server = server.listen().await.expect("listen");
-	let cluster = Cluster::new(ClusterOptions::default()).expect("cluster init");
+	let cluster = cluster::Cluster::new(cluster::Options::default()).expect("cluster init");
 	let handle = tokio::spawn(async move {
 		while let Some(request) = server.accept().await {
 			let conn = Connection::new(request, cluster.clone(), auth.clone());
@@ -777,7 +777,7 @@ struct Decider {
 }
 
 impl Decider {
-	fn spawn(mut admissions: moq_relay::Admissions, grant: Grant) -> Self {
+	fn spawn(mut admissions: moq_relay::auth::Admissions, grant: Grant) -> Self {
 		let producers = Arc::new(Mutex::new(Vec::new()));
 		let seen = Arc::new(Mutex::new(Vec::new()));
 		let decider = Self {
@@ -801,7 +801,7 @@ impl Decider {
 /// gone, nobody is admitted.
 #[tokio::test]
 async fn an_embedded_decider_admits_and_revokes() {
-	let (auth, admissions) = moq_relay::Auth::embedded("test-relay");
+	let (auth, admissions) = moq_relay::auth::Auth::embedded("test-relay");
 	let decider = Decider::spawn(admissions, grant(Duration::from_secs(3600)));
 	let (port, relay) = spawn_relay(auth.clone()).await;
 	let (pub_session, sub_session) = connect_and_round_trip(&room_url("tcp", port)).await;
@@ -825,17 +825,17 @@ async fn an_embedded_decider_admits_and_revokes() {
 	);
 
 	// A refusal reaches the session's transport before it establishes.
-	let (refusing, mut refusals) = moq_relay::Auth::embedded("test-relay");
+	let (refusing, mut refusals) = moq_relay::auth::Auth::embedded("test-relay");
 	tokio::spawn(async move {
 		while let Some(admission) = refusals.next().await {
-			admission.refuse(moq_relay::AuthError::Refused);
+			admission.refuse(moq_relay::auth::Error::Refused);
 		}
 	});
 	let (refused_port, refusing_relay) = spawn_relay(refusing).await;
 	assert_refused(&room_url("tcp", refused_port)).await;
 
 	// Nobody answering is an outage: no session gets through.
-	let (orphaned, admissions) = moq_relay::Auth::embedded("test-relay");
+	let (orphaned, admissions) = moq_relay::auth::Auth::embedded("test-relay");
 	drop(admissions);
 	let (orphan_port, orphan_relay) = spawn_relay(orphaned).await;
 	assert_refused(&room_url("tcp", orphan_port)).await;
@@ -849,12 +849,12 @@ async fn an_embedded_decider_admits_and_revokes() {
 /// grant's `expires`.
 #[tokio::test]
 async fn a_fixed_lease_still_expires() {
-	let (auth, mut admissions) = moq_relay::Auth::embedded("test-relay");
+	let (auth, mut admissions) = moq_relay::auth::Auth::embedded("test-relay");
 	tokio::spawn(async move {
 		while let Some(admission) = admissions.next().await {
 			let mut grant = Grant::new(all(), all());
 			grant.expires = Some(SystemTime::now() + Duration::from_secs(1));
-			admission.grant(moq_relay::Lease::fixed(grant));
+			admission.grant(moq_relay::auth::Lease::fixed(grant));
 		}
 	});
 	let (port, relay) = spawn_relay(auth).await;

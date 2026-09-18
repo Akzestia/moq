@@ -91,7 +91,7 @@ async fn assert_owner_stopped(quic: SocketAddr, http: SocketAddr) {
 
 /// Fire the embedder stop and wait for `run` to return: the join every
 /// worker thread and listener goes through, as opposed to aborting the task.
-async fn stop(trigger: moq_relay::ShutdownTrigger, running: tokio::task::JoinHandle<anyhow::Result<()>>) {
+async fn stop(trigger: moq_relay::shutdown::Trigger, running: tokio::task::JoinHandle<anyhow::Result<()>>) {
 	trigger.start();
 	tokio::time::timeout(TIMEOUT, running)
 		.await

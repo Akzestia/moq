@@ -7,7 +7,7 @@
 //! # Why this is a type and not just `main`
 //!
 //! An embedder wanting the relay PLUS its own workers - extra routes on the web
-//! server, an in-process recorder against [`Cluster::origin`], another listener
+//! server, an in-process recorder against [`cluster::Cluster::origin`], another listener
 //! in its own `select!` - loads a [`Relay`], clones the handles it needs, mounts
 //! routes, and calls [`Relay::run`]. The owner keeps the listeners, worker
 //! threads, error propagation, and shutdown joins, so a new socket added here
@@ -23,7 +23,7 @@
 use anyhow::Context;
 use axum::Router;
 
-use crate::{Admissions, Auth, Cluster, ClusterOptions, Config, Connection, Internal, Shutdown, ShutdownTrigger, Web};
+use crate::{Config, Connection, auth, auth::Admissions, cluster, internal, shutdown, web};
 
 /// A fully assembled relay: the owner of every listener, worker group, and
 /// shutdown join.
@@ -34,7 +34,7 @@ use crate::{Admissions, Auth, Cluster, ClusterOptions, Config, Connection, Inter
 /// then mount extra routes with [`Self::with_web`] / [`Self::with_internal`].
 /// An application that decides admissions itself leaves `[auth]` empty and
 /// takes [`Self::admissions`]. `run` is the serving loop; it returns after
-/// [`ShutdownTrigger::start`] drains the sessions, with the sockets released
+/// [`shutdown::Trigger::start`] drains the sessions, with the sockets released
 /// and the workers joined.
 ///
 /// ```ignore
@@ -50,20 +50,20 @@ use crate::{Admissions, Auth, Cluster, ClusterOptions, Config, Connection, Inter
 pub struct Relay {
 	server: moq_tokio::Server,
 	client: moq_tokio::Client,
-	auth: Auth,
+	auth: auth::Auth,
 	/// The sessions the embedder decides, until it takes them. `None` when the
 	/// config named a source; `run` refuses to start while this is still held.
 	admissions: Option<Admissions>,
-	cluster: Cluster,
+	cluster: cluster::Cluster,
 	stats: moq_stats::Producer,
-	internal: Internal,
-	web: Web,
+	internal: internal::Internal,
+	web: web::Web,
 	addr: Option<std::net::SocketAddr>,
-	shutdown: Shutdown,
-	shutdown_trigger: ShutdownTrigger,
-	/// Replacement for the default public router. `None` serves [`Web::routes`].
+	shutdown: shutdown::Observer,
+	shutdown_trigger: shutdown::Trigger,
+	/// Replacement for the default public router. `None` serves [`web::Web::routes`].
 	web_routes: Option<Router>,
-	/// Replacement for the default ops router. `None` serves [`Internal::routes`].
+	/// Replacement for the default ops router. `None` serves [`internal::Internal::routes`].
 	internal_routes: Option<Router>,
 	/// The thread-per-core QUIC workers, already bound and waiting to be split
 	/// and run. `None` unless `runtime.workers` is configured, in which case
@@ -100,7 +100,7 @@ impl Relay {
 		// before `run`, which refuses to start if nobody did.
 		let (auth, admissions) = match config.auth.is_empty() {
 			true => {
-				let (auth, admissions) = Auth::embedded(node);
+				let (auth, admissions) = auth::Auth::embedded(node);
 				(auth, Some(admissions))
 			}
 			false => (config.auth.init(node, &config.connect.tls)?, None),
@@ -108,7 +108,7 @@ impl Relay {
 
 		#[cfg(feature = "cluster-lan")]
 		if config.cluster.lan.enabled {
-			Cluster::validate_lan_versions(&config.connect, &config.listen)?;
+			cluster::Cluster::validate_lan_versions(&config.connect, &config.listen)?;
 		}
 
 		let server_versions = config.listen.versions();
@@ -210,12 +210,12 @@ impl Relay {
 			(None, Some(certificates)) => certificates,
 			(None, None) => server.certificates(),
 		};
-		let mut advertise = crate::LanAdvertise::new(addr.map(|a| a.port()).unwrap_or(0));
+		let mut advertise = crate::cluster::LanAdvertise::new(addr.map(|a| a.port()).unwrap_or(0));
 		let generated = !config.listen.tls.generate.is_empty() || config.listen.tls.identity.is_some();
 		if generated && let Some(fingerprint) = certificates.fingerprints().into_iter().next() {
 			advertise = advertise.with_fingerprint(fingerprint);
 		}
-		let cluster = Cluster::new(ClusterOptions::new(config.cluster).with_cache(cache))?
+		let cluster = cluster::Cluster::new(cluster::Options::new(config.cluster).with_cache(cache))?
 			.with_client(client.clone())
 			.with_client_tls(config.connect.tls.build()?)
 			.with_connect(config.connect.clone(), config.quic.clone())
@@ -228,8 +228,8 @@ impl Relay {
 		// Graceful shutdown: the first signal drains every accepted session with a
 		// GOAWAY; a second signal (or the drain window elapsing) exits.
 		let drain_timeout = config.drain_timeout.into_std();
-		let (shutdown_trigger, shutdown) = Shutdown::new(drain_timeout);
-		let web = Web::new(auth.clone(), cluster.clone(), certificates, config.web)
+		let (shutdown_trigger, shutdown) = shutdown::Observer::new(drain_timeout);
+		let web = web::Web::new(auth.clone(), cluster.clone(), certificates, config.web)
 			.with_shutdown(shutdown.clone())
 			.with_versions(server_versions);
 
@@ -238,7 +238,7 @@ impl Relay {
 		// when unconfigured. Every listener that performs a real accept(2) reports here,
 		// web and stream alike: a stream-only relay has no web listener at all, and the
 		// point is that whichever socket goes quiet is the one a scrape can see.
-		let internal = Internal::new(config.internal, cluster.stats.clone())
+		let internal = internal::Internal::new(config.internal, cluster.stats.clone())
 			.with_cluster(&cluster)
 			.with_listeners(web.accept_health())
 			.with_listeners(server.accept_health());
@@ -252,7 +252,7 @@ impl Relay {
 		};
 
 		// `kind` so the QUIC line is distinguishable from the web listeners', which
-		// log the same way from `Web::serve` and may sit on a different port.
+		// log the same way from `web::Web::serve` and may sit on a different port.
 		match addr {
 			Some(addr) => tracing::info!(%addr, kind = "quic", "listening"),
 			None => tracing::info!("listening (stream transports only)"),
@@ -293,19 +293,19 @@ impl Relay {
 	/// Where every session's grant comes from: the auth server, the static public
 	/// grant, or the embedder answering [`Self::admissions`]. Clone it to admit
 	/// your own listeners' sessions the same way.
-	pub fn auth(&self) -> &Auth {
+	pub fn auth(&self) -> &auth::Auth {
 		&self.auth
 	}
 
 	/// The sessions to decide when `[auth]` names no source: take them before
-	/// [`Self::run`] and answer each [`Admission`](crate::Admission). `None` when
+	/// [`Self::run`] and answer each [`Admission`](crate::auth::Admission). `None` when
 	/// the config named a source, or once taken.
 	pub fn admissions(&mut self) -> Option<Admissions> {
 		self.admissions.take()
 	}
 
 	/// The shared cluster: the origin every session and peer publishes into.
-	pub fn cluster(&self) -> &Cluster {
+	pub fn cluster(&self) -> &cluster::Cluster {
 		&self.cluster
 	}
 
@@ -317,33 +317,33 @@ impl Relay {
 	}
 
 	/// Graceful-shutdown signal shared by every accepted session and web handler.
-	pub fn shutdown(&self) -> &Shutdown {
+	pub fn shutdown(&self) -> &shutdown::Observer {
 		&self.shutdown
 	}
 
 	/// Starts graceful shutdown: every session drains with a GOAWAY and
 	/// [`Self::run`] returns once the drain window elapses. Clone it before
 	/// `run` consumes the relay.
-	pub fn shutdown_trigger(&self) -> &ShutdownTrigger {
+	pub fn shutdown_trigger(&self) -> &shutdown::Trigger {
 		&self.shutdown_trigger
 	}
 
-	/// The customer-facing web surface. Call [`Web::routes`] and hand the
+	/// The customer-facing web surface. Call [`web::Web::routes`] and hand the
 	/// result of merging your own routes to [`Self::with_web`].
-	pub fn web(&self) -> &Web {
+	pub fn web(&self) -> &web::Web {
 		&self.web
 	}
 
 	/// The internal (ops) surface: `/metrics`, `/health`, `/nodes`. Call
-	/// [`Internal::routes`] and hand extras to [`Self::with_internal`].
-	pub fn internal(&self) -> &Internal {
+	/// [`internal::Internal::routes`] and hand extras to [`Self::with_internal`].
+	pub fn internal(&self) -> &internal::Internal {
 		&self.internal
 	}
 
 	/// Serve `routes` on the public HTTP/HTTPS listeners instead of the
 	/// relay's default router.
 	///
-	/// Build `routes` from [`Web::routes`](Web::routes) plus whatever the
+	/// Build `routes` from [`web::Web::routes`] plus whatever the
 	/// application nests or merges; this replaces the router, so a bare
 	/// `Router::new()` drops every built-in route (health, certificate
 	/// fingerprint, announced, fetch, WebSocket). [`Self::run`] still owns the
@@ -357,7 +357,7 @@ impl Relay {
 	/// Serve `routes` on the internal (ops) listener instead of the relay's
 	/// default ops router.
 	///
-	/// Build `routes` from [`Internal::routes`](Internal::routes) plus extras;
+	/// Build `routes` from [`internal::Internal::routes`] plus extras;
 	/// this replaces the router, so a bare `Router::new()` drops `/metrics`,
 	/// `/health`, and `/nodes`. [`Self::run`] still owns the listener.
 	#[must_use = "the relay with the extra routes is returned"]
@@ -369,7 +369,7 @@ impl Relay {
 	/// Serve until something fails or shutdown completes: accept sessions, run
 	/// the cluster, and serve both HTTP surfaces. Notifies systemd once
 	/// everything is up. Returns once the drain window elapses after a signal
-	/// or [`ShutdownTrigger::start`], with every listener released and every
+	/// or [`shutdown::Trigger::start`], with every listener released and every
 	/// worker joined.
 	///
 	/// This is also the embedding loop. Extra routes go on via [`Self::with_web`]
@@ -550,10 +550,10 @@ impl Relay {
 }
 
 /// Two-stage shutdown: the first signal, or an embedder firing
-/// [`ShutdownTrigger::start`], starts the drain broadcast (every session sends
+/// [`shutdown::Trigger::start`], starts the drain broadcast (every session sends
 /// GOAWAY and waits for its peer to leave); a second signal, or the drain
 /// window elapsing, returns from [`Relay::run`].
-async fn drain(trigger: ShutdownTrigger, mut shutdown: Shutdown) -> anyhow::Result<()> {
+async fn drain(trigger: shutdown::Trigger, mut shutdown: shutdown::Observer) -> anyhow::Result<()> {
 	let window = shutdown.drain_timeout;
 	tokio::select! {
 		res = shutdown_signal() => {
@@ -605,7 +605,12 @@ async fn shutdown_signal() -> anyhow::Result<()> {
 /// The accept loop for a single [`moq_tokio::Server`]. Embedders driving a
 /// [`Relay`] call [`Relay::run`] instead, which owns worker selection and
 /// shutdown; this stays public for a server the caller bound itself.
-pub async fn serve(server: moq_tokio::Server, cluster: Cluster, auth: Auth, shutdown: Shutdown) -> anyhow::Result<()> {
+pub async fn serve(
+	server: moq_tokio::Server,
+	cluster: cluster::Cluster,
+	auth: auth::Auth,
+	shutdown: shutdown::Observer,
+) -> anyhow::Result<()> {
 	// Binds whatever is still unbound (the `tcp`/`unix` listeners), so a bind
 	// failure is reported here rather than as an immediate stop.
 	let mut server = server.listen().await.context("failed to bind listeners")?;
