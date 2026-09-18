@@ -419,6 +419,13 @@ impl Client {
 				.await?);
 		}
 
+		// A WebSocket URL names its transport. No QUIC backend can dial it, so there is
+		// nothing to race and the fallback's answer is the connect's verdict.
+		#[cfg(feature = "websocket")]
+		if matches!(url.scheme(), "ws" | "wss") {
+			return self.connect_websocket(addr).await;
+		}
+
 		// iroh offers the moq ALPNs ahead of H3, so two moq endpoints normally land on raw
 		// QUIC, which carries no request URI. The scheme can't tell us which we got, so the
 		// request target waits on the negotiated binding: the SETUP for raw QUIC, the
@@ -503,18 +510,23 @@ impl Client {
 		}
 
 		#[cfg(feature = "websocket")]
-		{
-			let alpns = self.versions.alpns();
-			let session =
-				crate::websocket::connect(&self.websocket, &self.tls, self.tls_host_name.as_deref(), addr, &alpns)
-					.await?;
-			return Ok(moq
-				.connect(crate::runtime::Runtime::new(), crate::transport::Async::new(session))
-				.await?);
-		}
+		return self.connect_websocket(addr).await;
 
 		#[cfg(not(feature = "websocket"))]
 		return Err(Error::NoBackend("no QUIC backend matched; this should not happen"));
+	}
+
+	/// Connect over WebSocket alone. qmux over WebSocket carries the path in its request
+	/// URI, so the plain builder is used: repeating it in the SETUP is a protocol violation.
+	#[cfg(feature = "websocket")]
+	async fn connect_websocket(&self, addr: crate::connect::Addr) -> crate::Result<moq_net::Session> {
+		let alpns = self.versions.alpns();
+		let session =
+			crate::websocket::connect(&self.websocket, &self.tls, self.tls_host_name.as_deref(), addr, &alpns).await?;
+		Ok(self
+			.moq
+			.connect(crate::runtime::Runtime::new(), crate::transport::Async::new(session))
+			.await?)
 	}
 
 	/// Race the QUIC dial against the WebSocket fallback, handshaking whichever wins.
@@ -642,7 +654,6 @@ where
 			res = &mut quic, if !quic_done => {
 				match res {
 					Ok(session) => return Ok(TransportRace::Quic(session)),
-					Err(err) if err.is_auth() => return Err(err),
 					Err(err) => {
 						tracing::warn!(%err, "QUIC connection failed");
 						quic_err = Some(err);
@@ -653,7 +664,6 @@ where
 			res = &mut websocket, if !websocket_done => {
 				match res {
 					Some(Ok(session)) => return Ok(TransportRace::WebSocket(session)),
-					Some(Err(err)) if err.is_auth() => return Err(err),
 					Some(Err(err)) => {
 						tracing::warn!(%err, "WebSocket connection failed");
 						websocket_err = Some(err);
@@ -672,10 +682,17 @@ where
 		}
 	}
 
+	// Auth is terminal only when both arms refused. A WebTransport-only endpoint
+	// answers the fallback with 403 while QUIC is still in flight, and reconnect
+	// treats is_auth() as terminal, so a mixed pair reports the retryable error.
 	match (quic_err, websocket_err) {
-		(Some(quic), Some(websocket)) => Err(Error::TransportRace {
-			quic: std::sync::Arc::new(quic),
-			websocket: std::sync::Arc::new(websocket),
+		(Some(quic), Some(websocket)) => Err(match (quic.is_auth(), websocket.is_auth()) {
+			(false, false) => Error::TransportRace {
+				quic: std::sync::Arc::new(quic),
+				websocket: std::sync::Arc::new(websocket),
+			},
+			(true, false) => websocket,
+			_ => quic,
 		}),
 		(Some(err), None) | (None, Some(err)) => Err(err),
 		(None, None) => Err(Error::ConnectFailed),
@@ -1210,7 +1227,7 @@ mod tests {
 
 	#[cfg(all(feature = "websocket", any(feature = "noq", feature = "quinn", feature = "quiche")))]
 	#[tokio::test]
-	async fn race_transport_connect_stops_on_quic_auth_error() {
+	async fn race_transport_connect_keeps_websocket_after_quic_auth_error() {
 		let quic = async { Err::<usize, _>(crate::ConnectError::Unauthorized.into()) };
 		let websocket = async {
 			// This only needs to complete later than the immediately ready QUIC auth error.
@@ -1218,8 +1235,45 @@ mod tests {
 			Some(Ok(1usize))
 		};
 
+		let value = super::race_transport_connect(quic, websocket).await.unwrap();
+		assert_eq!(value, super::TransportRace::WebSocket(1));
+	}
+
+	#[cfg(all(feature = "websocket", any(feature = "noq", feature = "quinn", feature = "quiche")))]
+	#[tokio::test]
+	async fn race_transport_connect_keeps_quic_after_websocket_forbidden() {
+		let quic = async {
+			tokio::task::yield_now().await;
+			Ok(3usize)
+		};
+		let websocket = async { Some(Err::<usize, _>(crate::ConnectError::Forbidden.into())) };
+
+		let value = super::race_transport_connect(quic, websocket).await.unwrap();
+		assert_eq!(value, super::TransportRace::Quic(3));
+	}
+
+	#[cfg(all(feature = "websocket", any(feature = "noq", feature = "quinn", feature = "quiche")))]
+	#[tokio::test]
+	async fn race_transport_connect_reports_auth_when_both_refuse() {
+		let quic = async { Err::<usize, _>(crate::ConnectError::Unauthorized.into()) };
+		let websocket = async { Some(Err::<usize, _>(crate::ConnectError::Forbidden.into())) };
+
 		let err = super::race_transport_connect(quic, websocket).await.unwrap_err();
-		assert_eq!(err.connect_error(), Some(crate::ConnectError::Unauthorized));
+		assert!(err.is_auth(), "unexpected error: {err}");
+	}
+
+	#[cfg(all(feature = "websocket", any(feature = "noq", feature = "quinn", feature = "quiche")))]
+	#[tokio::test]
+	async fn race_transport_connect_reports_quic_error_when_websocket_forbidden() {
+		let quic = async {
+			tokio::task::yield_now().await;
+			Err::<usize, _>(Error::ConnectFailed)
+		};
+		let websocket = async { Some(Err::<usize, _>(crate::ConnectError::Forbidden.into())) };
+
+		let err = super::race_transport_connect(quic, websocket).await.unwrap_err();
+		assert!(matches!(err, Error::ConnectFailed), "unexpected error: {err}");
+		assert!(!err.is_auth(), "mixed auth/non-auth must stay retryable: {err}");
 	}
 
 	#[cfg(all(feature = "websocket", any(feature = "noq", feature = "quinn", feature = "quiche")))]
