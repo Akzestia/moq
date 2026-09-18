@@ -1395,7 +1395,6 @@ where
 				request_id,
 				track_namespace: path.as_path(),
 				cluster,
-				pattern: None,
 			})
 			.await?;
 
@@ -1828,18 +1827,13 @@ where
 					return stream.writer.closed().await;
 				}
 				NamespaceEvent::Update(Some(update)) => {
-					let Some(path) = update.pattern.as_prefix() else {
-						// Decode-first: do not emit NAMESPACE_PATTERN until receivers
-						// that negotiated it also land it, and never as a literal prefix.
-						continue;
-					};
-					let path = crate::Path::new(path).to_owned();
+					let path = update.path;
 					let suffix = path
 						.strip_prefix(&prefix)
 						.expect("origin returned invalid prefix")
 						.to_owned();
 
-					if update.active {
+					if update.kind.is_active() {
 						// A repeat for a live suffix is a metadata update: keep the
 						// peer's refusal state and re-run the selection.
 						match ns.watched.get_mut(&suffix) {
@@ -4186,7 +4180,6 @@ mod tests {
 				cost: None,
 			},
 			solicit,
-			..Default::default()
 		});
 		slot
 	}
