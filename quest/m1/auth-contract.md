@@ -44,8 +44,7 @@ it refuses.
   defers: `Claims`, `Key`, `Jwk`, `KeyId`, `Algorithm`, `KeySet`, and `Scope`
   are root exports today. Moving them is free before 0.1.0 ships and a
   breaking release after.
-- Parity: `ClaimsSchema.exp` is `z.number()` where Rust refuses a float;
-  the CLI verbs spell their flags `--out`/`--in` in Rust and `--key` in JS.
+- Parity: `ClaimsSchema.exp` is `z.number()` where Rust refuses a float.
 
 Public API: breaking on moq-auth, @moq/auth, and moq-relay's auth module,
 so on dev. Wire: the auth JSON changes only if `Peer` is split. Consumers:
