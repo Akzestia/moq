@@ -2207,15 +2207,31 @@ impl Consumer {
 	}
 
 	/// Groups this copy still holds, so an origin can keep them after dropping the source.
+	///
+	/// Publisher-produced groups come back in arrival order, matching what
+	/// `recv_group` would deliver; fetched backfill absent from arrival follows
+	/// in sequence order for sequence fetches.
 	pub(crate) fn cached_groups(&self) -> Vec<(group::Producer, bool)> {
 		match &self.inner {
-			ConsumerKind::Plain(state) => state
-				.read()
-				.lookup
-				.values()
-				.filter(|slot| !slot.group.is_aborted())
-				.map(|slot| (slot.group.clone(), slot.visible))
-				.collect(),
+			ConsumerKind::Plain(state) => {
+				let state = state.read();
+				let mut out = Vec::with_capacity(state.lookup.len());
+				for (sequence, stamp) in state.arrival.iter() {
+					if let Some(slot) = state.lookup.get(sequence)
+						&& slot.stamp == *stamp
+						&& !slot.group.is_aborted()
+					{
+						out.push((slot.group.clone(), slot.visible));
+					}
+				}
+				// Fetched backfill never enters arrival; keep it for sequence fetches.
+				for (sequence, slot) in state.lookup.iter() {
+					if !slot.group.is_aborted() && !out.iter().any(|(group, _)| group.sequence == *sequence) {
+						out.push((slot.group.clone(), slot.visible));
+					}
+				}
+				out
+			}
 			ConsumerKind::Spliced(_) => Vec::new(),
 		}
 	}
@@ -6199,6 +6215,21 @@ mod test {
 		assert_eq!(consumer.assert_group().sequence, 0);
 		let done = consumer.recv_group().now_or_never().expect("should not block").unwrap();
 		assert!(done.is_none(), "consumer should drain then see clean finish");
+	}
+
+	#[tokio::test]
+	async fn cached_groups_preserve_arrival_order() {
+		let mut producer = track_producer("test", None);
+		producer.create_group(group::Info { sequence: 5 }).unwrap();
+		producer.create_group(group::Info { sequence: 3 }).unwrap();
+
+		let groups = producer.consume().cached_groups();
+		let sequences: Vec<u64> = groups.iter().map(|(group, _)| group.sequence).collect();
+		assert_eq!(
+			sequences,
+			vec![5, 3],
+			"warm snapshot must follow arrival, not sequence order"
+		);
 	}
 
 	#[test]
