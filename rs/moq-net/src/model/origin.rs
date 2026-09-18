@@ -2502,16 +2502,20 @@ async fn serve_track(
 			// The outer loop recomputes `used` and the countdown on the next pass.
 			// Drop the source copy on the unused edge so its producer goes idle
 			// immediately; keep the groups it already delivered on a local track
-			// so resume stays spliced until the linger expires.
+			// so resume stays spliced until the linger expires. A source with no
+			// snapshot (a spliced copy from another front) still releases its
+			// segment: the next reader re-splices, paying `TRACK_INFO` again.
 			Step::Demand => {
 				if !resume.is_used()
 					&& let Some((_, source)) = serving.take()
 				{
 					drop(warm.take());
-					if let Some(local) = warm_copy(&source) {
-						if resume.release().is_err() {
-							return;
-						}
+					let local = warm_copy(&source);
+					drop(source);
+					if resume.release().is_err() {
+						return;
+					}
+					if let Some(local) = local {
 						if let Err(err) = resume.takeover(&local) {
 							let _ = WarmCopy(local);
 							let _ = resume.abort(err);
@@ -5631,6 +5635,62 @@ mod tests {
 			.expect("recv group")
 			.expect("track ended early");
 		assert_eq!(&group.read_frame().await.unwrap().unwrap().payload[..], b"live");
+	}
+
+	/// A front serving from another front's spliced copy has no snapshot to keep:
+	/// it still drops upstream on the unused edge, so the publisher's `unused()`
+	/// resolves far below `TRACK_IDLE_LINGER` through the whole chain. The next
+	/// reader re-splices, paying `TRACK_INFO` again.
+	#[tokio::test]
+	async fn chained_front_drops_the_source_when_unused() {
+		let leaf = origin(1).produce();
+		let leaf_consumer = leaf.consume();
+
+		let mut broadcast = leaf.create_broadcast("room/alice").unwrap();
+		let mut track = broadcast.create_track("video", None).unwrap();
+		let mut group = track.append_group().unwrap();
+		group.write_frame(crate::Timestamp::ZERO, b"cached".as_ref()).unwrap();
+		group.finish().unwrap();
+
+		// The leaf's front view: a spliced broadcast, so any front serving from
+		// it holds a spliced source copy with nothing to snapshot.
+		let leaf_front = leaf_consumer
+			.request_broadcast("room/alice")
+			.now_or_never()
+			.expect("resolves")
+			.expect("resolves");
+
+		let mid = origin(2).produce();
+		let mid_server = mid
+			.dynamic(subtree("room"), Route::default().with_hops(hops(&[10])))
+			.unwrap();
+		let mid_pending = mid.consume().request_broadcast("room/alice");
+		queued(&mid_server).await.accept(&leaf_front);
+		let mid_resolved = mid_pending.await.expect("mid resolves");
+
+		let edge = origin(3).produce();
+		let edge_server = edge
+			.dynamic(subtree("room"), Route::default().with_hops(hops(&[20])))
+			.unwrap();
+		let edge_pending = edge.consume().request_broadcast("room/alice");
+		queued(&edge_server).await.accept(&mid_resolved);
+		let edge_resolved = edge_pending.await.expect("edge resolves");
+
+		let mut subscription = edge_resolved
+			.track("video")
+			.unwrap()
+			.subscribe(None)
+			.await
+			.expect("subscribe");
+		let mut group = subscription.recv_group().await.unwrap().unwrap();
+		assert_eq!(&group.read_frame().await.unwrap().unwrap().payload[..], b"cached");
+		drop(group);
+		drop(subscription);
+
+		tokio::time::timeout(Duration::from_secs(5), track.unused())
+			.await
+			.expect("chained unused should resolve far below TRACK_IDLE_LINGER")
+			.expect("source closed");
 	}
 
 	/// A newer local source wins dispatch the moment it attaches, but one whose copy
