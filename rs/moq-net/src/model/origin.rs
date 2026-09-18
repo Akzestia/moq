@@ -5579,8 +5579,8 @@ mod tests {
 		let producer = origin(1).produce();
 		let consumer = producer.consume();
 
-		let mut broadcast = producer.create_broadcast("room/alice").unwrap();
-		let mut track = broadcast.create_track("video", None).unwrap();
+		let broadcast = producer.create_broadcast("room/alice").unwrap();
+		let track = broadcast.create_track("video", None).unwrap();
 		let mut group = track.append_group().unwrap();
 		group.write_frame(crate::Timestamp::ZERO, b"cached".as_ref()).unwrap();
 		group.finish().unwrap();
@@ -5646,8 +5646,8 @@ mod tests {
 		let leaf = origin(1).produce();
 		let leaf_consumer = leaf.consume();
 
-		let mut broadcast = leaf.create_broadcast("room/alice").unwrap();
-		let mut track = broadcast.create_track("video", None).unwrap();
+		let broadcast = leaf.create_broadcast("room/alice").unwrap();
+		let track = broadcast.create_track("video", None).unwrap();
 		let mut group = track.append_group().unwrap();
 		group.write_frame(crate::Timestamp::ZERO, b"cached".as_ref()).unwrap();
 		group.finish().unwrap();
@@ -5661,17 +5661,13 @@ mod tests {
 			.expect("resolves");
 
 		let mid = origin(2).produce();
-		let mid_server = mid
-			.dynamic(subtree("room"), Route::default().with_hops(hops(&[10])))
-			.unwrap();
+		let mid_server = mid.dynamic("room", Route::default().with_hops(hops(&[10]))).unwrap();
 		let mid_pending = mid.consume().request_broadcast("room/alice");
 		queued(&mid_server).await.accept(&leaf_front);
 		let mid_resolved = mid_pending.await.expect("mid resolves");
 
 		let edge = origin(3).produce();
-		let edge_server = edge
-			.dynamic(subtree("room"), Route::default().with_hops(hops(&[20])))
-			.unwrap();
+		let edge_server = edge.dynamic("room", Route::default().with_hops(hops(&[20]))).unwrap();
 		let edge_pending = edge.consume().request_broadcast("room/alice");
 		queued(&edge_server).await.accept(&mid_resolved);
 		let edge_resolved = edge_pending.await.expect("edge resolves");

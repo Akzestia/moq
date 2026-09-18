@@ -6219,7 +6219,7 @@ mod test {
 
 	#[tokio::test]
 	async fn cached_groups_preserve_arrival_order() {
-		let mut producer = track_producer("test", None);
+		let producer = track_producer("test", None);
 		producer.create_group(group::Info { sequence: 5 }).unwrap();
 		producer.create_group(group::Info { sequence: 3 }).unwrap();
 
