@@ -1956,9 +1956,9 @@ fn teardown_broadcasts(node: &Lock<OriginNode>) {
 /// How long a spliced track stays warm after its last reader leaves.
 ///
 /// Within the window a returning viewer, or the next of a run of back-to-back
-/// fetches, reuses the source's copy: no new track request, and no second round
-/// trip for its `TRACK_INFO`. After it, the copy is released so an idle track
-/// costs nothing upstream.
+/// fetches, reads the groups the front already cached: no second round trip for
+/// `TRACK_INFO`. Groups past that cached edge cost a fresh source splice. After
+/// the window, the cached segment is released.
 ///
 /// Sized above the fetch cadence of a segmented consumer: HLS polls every
 /// `TARGETDURATION` seconds, commonly 6 or 10, so a shorter window would drop the
@@ -2272,6 +2272,27 @@ async fn run_front(
 	tree.lock().remove(&state, &full);
 }
 
+/// A local copy of groups the front already delivered, so resume stays spliced
+/// after the source track is dropped. Finished on drop so an idle linger does
+/// not warn about an abandoned producer.
+struct WarmCopy(track::Producer);
+
+impl Drop for WarmCopy {
+	fn drop(&mut self) {
+		let _ = self.0.finish();
+	}
+}
+
+/// Cache `source`'s groups on a new local track the origin owns.
+fn warm_copy(source: &track::Consumer) -> Option<track::Producer> {
+	let info = source.cached_info()?;
+	let mut local = track::Producer::new(Arc::new(source.broadcast().clone()), source.name(), info);
+	for (group, visible) in source.cached_groups() {
+		let _ = local.adopt_group(group, visible);
+	}
+	Some(local)
+}
+
 /// Serves one spliced logical track: splices in the best source's copy of the
 /// track, re-splicing on handover or failure, until the track completes or the
 /// front closes. A refusal (a source rejecting the track, returning incompatible
@@ -2307,6 +2328,10 @@ async fn serve_track(
 
 	// The source whose copy is currently spliced in, and that copy.
 	let mut serving: Option<(u64, track::Consumer)> = None;
+	// Local cache of groups the front already delivered, held after the source
+	// copy is dropped so resume stays spliced for the linger without pinning
+	// the source as a reader. Finished on drop so an idle linger is quiet.
+	let mut warm: Option<WarmCopy> = None;
 	// The delivered edge when that copy spliced in. A copy that dies without
 	// advancing it never delivered anything, which is what [`Step::Failed`]
 	// uses to tell a refusal from a mid-stream failover. Snapshotted per splice,
@@ -2360,6 +2385,8 @@ async fn serve_track(
 		// and a spliced one is released once the idle window expires. Both sides use
 		// the same signal, so a release can't immediately re-splice and spin.
 		//
+		// The source copy is dropped on the unused edge, not at the linger: holding
+		// it would count the front as a reader for 30s after the real one left.
 		// The countdown keys off the segment, not our handle on the route that
 		// produced it: a route that leaves (or a copy that dies) drops the handle
 		// while the segment stays spliced, and that segment is exactly what the
@@ -2473,7 +2500,31 @@ async fn serve_track(
 				serving = None;
 			}
 			// The outer loop recomputes `used` and the countdown on the next pass.
-			Step::Demand => {}
+			// Drop the source copy on the unused edge so its producer goes idle
+			// immediately; keep the groups it already delivered on a local track
+			// so resume stays spliced until the linger expires. A source with no
+			// snapshot (a spliced copy from another front) still releases its
+			// segment: the next reader re-splices, paying `TRACK_INFO` again.
+			Step::Demand => {
+				if !resume.is_used()
+					&& let Some((_, source)) = serving.take()
+				{
+					drop(warm.take());
+					let local = warm_copy(&source);
+					drop(source);
+					if resume.release().is_err() {
+						return;
+					}
+					if let Some(local) = local {
+						if let Err(err) = resume.takeover(&local) {
+							let _ = WarmCopy(local);
+							let _ = resume.abort(err);
+							return;
+						}
+						warm = Some(WarmCopy(local));
+					}
+				}
+			}
 			// Forget which route we were serving from, or the `gone` edge that woke
 			// us keeps firing: the id stays absent from the table, the wait returns
 			// Ready at once, and the loop spins on a full core without ever parking.
@@ -2481,15 +2532,16 @@ async fn serve_track(
 			// it delivered) until a replacement is proven servable.
 			Step::NoRoute => serving = None,
 			Step::Idle => {
-				// Nobody has read the track for the linger: drop the source's copy so
-				// its session can release the track (and the cached `track::Info` that
-				// came with it). The logical track stays alive and re-splices on the
-				// next reader, so a returning viewer or a follow-up fetch resumes.
+				// Nobody has read the track for the linger: release the cached
+				// segment. The source's copy was already dropped on the unused
+				// edge. The logical track stays alive and re-splices on the next
+				// reader.
 				if resume.release().is_err() {
 					// Finished or aborted meanwhile; the track is over either way.
 					return;
 				}
 				serving = None;
+				drop(warm.take());
 			}
 			Step::Splice(id, source) => {
 				// Ask the source for its copy and wait for the info to resolve,
@@ -5516,6 +5568,125 @@ mod tests {
 		// The path is free again for a fresh broadcast.
 		let _third = producer.create_broadcast("room/alice").unwrap();
 		assert!(consumer.get_broadcast("room/alice").is_some());
+	}
+
+	/// An origin front drops the source track as soon as its last reader leaves,
+	/// so the publisher's `unused()` resolves far below `TRACK_IDLE_LINGER`.
+	/// Cached groups stay on the front for the linger; a returning reader
+	/// replays them and re-splices for groups past that edge.
+	#[tokio::test]
+	async fn origin_front_drops_the_source_when_unused() {
+		let producer = origin(1).produce();
+		let consumer = producer.consume();
+
+		let broadcast = producer.create_broadcast("room/alice").unwrap();
+		let track = broadcast.create_track("video", None).unwrap();
+		let mut group = track.append_group().unwrap();
+		group.write_frame(crate::Timestamp::ZERO, b"cached".as_ref()).unwrap();
+		group.finish().unwrap();
+
+		let resolved = consumer
+			.request_broadcast("room/alice")
+			.now_or_never()
+			.expect("resolves")
+			.expect("resolves");
+		let mut subscription = resolved
+			.track("video")
+			.unwrap()
+			.subscribe(None)
+			.await
+			.expect("subscribe");
+		let mut group = subscription.recv_group().await.unwrap().unwrap();
+		assert_eq!(&group.read_frame().await.unwrap().unwrap().payload[..], b"cached");
+		drop(group);
+		drop(subscription);
+
+		tokio::time::timeout(Duration::from_secs(1), track.unused())
+			.await
+			.expect("source unused should resolve far below TRACK_IDLE_LINGER")
+			.expect("source closed");
+
+		// Cached groups stay on the front for the linger; a returning reader
+		// replays them without waiting out the window.
+		let mut again = resolved
+			.track("video")
+			.unwrap()
+			.subscribe(track::Subscription::default().with_max_age(Duration::from_secs(3600)))
+			.await
+			.expect("resubscribe");
+		let mut group = tokio::time::timeout(Duration::from_secs(1), again.recv_group())
+			.await
+			.expect("cached group is still on the front")
+			.expect("recv group")
+			.expect("track ended early");
+		assert_eq!(&group.read_frame().await.unwrap().unwrap().payload[..], b"cached");
+
+		tokio::time::timeout(Duration::from_secs(1), track.used())
+			.await
+			.expect("returning reader re-splices the source")
+			.expect("source closed");
+
+		let mut group = track.append_group().unwrap();
+		group.write_frame(crate::Timestamp::ZERO, b"live".as_ref()).unwrap();
+		group.finish().unwrap();
+		let mut group = tokio::time::timeout(Duration::from_secs(1), again.recv_group())
+			.await
+			.expect("groups past the cached edge come from the re-splice")
+			.expect("recv group")
+			.expect("track ended early");
+		assert_eq!(&group.read_frame().await.unwrap().unwrap().payload[..], b"live");
+	}
+
+	/// A front serving from another front's spliced copy has no snapshot to keep:
+	/// it still drops upstream on the unused edge, so the publisher's `unused()`
+	/// resolves far below `TRACK_IDLE_LINGER` through the whole chain. The next
+	/// reader re-splices, paying `TRACK_INFO` again.
+	#[tokio::test]
+	async fn chained_front_drops_the_source_when_unused() {
+		let leaf = origin(1).produce();
+		let leaf_consumer = leaf.consume();
+
+		let broadcast = leaf.create_broadcast("room/alice").unwrap();
+		let track = broadcast.create_track("video", None).unwrap();
+		let mut group = track.append_group().unwrap();
+		group.write_frame(crate::Timestamp::ZERO, b"cached".as_ref()).unwrap();
+		group.finish().unwrap();
+
+		// The leaf's front view: a spliced broadcast, so any front serving from
+		// it holds a spliced source copy with nothing to snapshot.
+		let leaf_front = leaf_consumer
+			.request_broadcast("room/alice")
+			.now_or_never()
+			.expect("resolves")
+			.expect("resolves");
+
+		let mid = origin(2).produce();
+		let mid_server = mid.dynamic("room", Route::default().with_hops(hops(&[10]))).unwrap();
+		let mid_pending = mid.consume().request_broadcast("room/alice");
+		queued(&mid_server).await.accept(&leaf_front);
+		let mid_resolved = mid_pending.await.expect("mid resolves");
+
+		let edge = origin(3).produce();
+		let edge_server = edge.dynamic("room", Route::default().with_hops(hops(&[20]))).unwrap();
+		let edge_pending = edge.consume().request_broadcast("room/alice");
+		queued(&edge_server).await.accept(&mid_resolved);
+		let edge_resolved = edge_pending.await.expect("edge resolves");
+
+		let mut subscription = edge_resolved
+			.track("video")
+			.unwrap()
+			.subscribe(None)
+			.await
+			.expect("subscribe");
+		let mut group = subscription.recv_group().await.unwrap().unwrap();
+		assert_eq!(&group.read_frame().await.unwrap().unwrap().payload[..], b"cached");
+		drop(group);
+		drop(subscription);
+
+		tokio::time::timeout(Duration::from_secs(5), track.unused())
+			.await
+			.expect("chained unused should resolve far below TRACK_IDLE_LINGER")
+			.expect("source closed");
 	}
 
 	/// A newer local source wins dispatch the moment it attaches, but one whose copy

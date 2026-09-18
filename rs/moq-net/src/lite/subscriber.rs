@@ -3271,10 +3271,11 @@ impl<S: crate::transport::poll::Session> ServeLoop<S> {
 					// (2) In-flight fetches; completions just retire.
 					let _ = self.fetches.poll(waiter);
 
-					// (3) Nobody reads this copy anymore: the origin released it after its
-					// idle linger, so drop it instead of holding the track state (and its
-					// TRACK_INFO) for a reader that may never return. In-flight fetches
-					// keep it alive: work already accepted still gets finished.
+					// (3) Nobody reads this copy anymore: the origin dropped its source
+					// copy when demand ended, so drop it instead of holding the track
+					// state (and its TRACK_INFO) for a reader that may never return.
+					// In-flight fetches keep it alive: work already accepted still
+					// gets finished.
 					if self.fetches.is_empty() && self.serving.poll_unused(waiter).is_ready() {
 						return Poll::Ready(ServeEnd::Idle);
 					}

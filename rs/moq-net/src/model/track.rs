@@ -22,7 +22,7 @@ use super::Cap;
 pub use super::subscription::{Position, Subscription};
 
 use std::{
-	collections::{BTreeMap, VecDeque},
+	collections::{BTreeMap, HashSet, VecDeque},
 	ops::{Bound, RangeBounds},
 	sync::Arc,
 	sync::OnceLock,
@@ -1174,6 +1174,24 @@ impl Producer {
 		&self.broadcast
 	}
 
+	/// Cache an already-produced group without rewriting its frames.
+	///
+	/// Used by an origin front to keep a warm copy of groups it already delivered
+	/// after dropping the source track that produced them.
+	pub(crate) fn adopt_group(&mut self, group: group::Producer, visible: bool) -> Result<()> {
+		let mut state = self.modify()?;
+		if let Some(fin) = state.final_sequence
+			&& group.sequence >= fin
+		{
+			return Err(Error::Closed);
+		}
+		if state.lookup.contains_key(&group.sequence) {
+			return Err(Error::Duplicate);
+		}
+		state.insert_group(&group, visible);
+		Ok(())
+	}
+
 	/// Create a new group with the given sequence number.
 	pub fn create_group(&self, group: group::Info) -> Result<group::Producer> {
 		let mut state = self.modify()?;
@@ -2186,6 +2204,45 @@ impl Consumer {
 	pub(crate) fn with_broadcast(mut self, broadcast: Arc<broadcast::Info>) -> Self {
 		self.broadcast = broadcast;
 		self
+	}
+
+	/// Groups this copy still holds, so an origin can keep them after dropping the source.
+	///
+	/// Publisher-produced groups come back in arrival order, matching what
+	/// `recv_group` would deliver; fetched backfill absent from arrival follows
+	/// in sequence order for sequence fetches.
+	pub(crate) fn cached_groups(&self) -> Vec<(group::Producer, bool)> {
+		match &self.inner {
+			ConsumerKind::Plain(state) => {
+				let state = state.read();
+				let mut out = Vec::with_capacity(state.lookup.len());
+				for (sequence, stamp) in state.arrival.iter() {
+					if let Some(slot) = state.lookup.get(sequence)
+						&& slot.stamp == *stamp
+						&& !slot.group.is_aborted()
+					{
+						out.push((slot.group.clone(), slot.visible));
+					}
+				}
+				// Fetched backfill never enters arrival; keep it for sequence fetches.
+				let mut copied: HashSet<u64> = out.iter().map(|(group, _)| group.sequence).collect();
+				for (sequence, slot) in state.lookup.iter() {
+					if !slot.group.is_aborted() && copied.insert(*sequence) {
+						out.push((slot.group.clone(), slot.visible));
+					}
+				}
+				out
+			}
+			ConsumerKind::Spliced(_) => Vec::new(),
+		}
+	}
+
+	/// Publisher properties already resolved on this copy, if any.
+	pub(crate) fn cached_info(&self) -> Option<Info> {
+		match &self.inner {
+			ConsumerKind::Plain(state) => state.read().info.clone(),
+			ConsumerKind::Spliced(_) => None,
+		}
 	}
 
 	/// The track name this handle is bound to.
@@ -6159,6 +6216,21 @@ mod test {
 		assert_eq!(consumer.assert_group().sequence, 0);
 		let done = consumer.recv_group().now_or_never().expect("should not block").unwrap();
 		assert!(done.is_none(), "consumer should drain then see clean finish");
+	}
+
+	#[tokio::test]
+	async fn cached_groups_preserve_arrival_order() {
+		let producer = track_producer("test", None);
+		producer.create_group(group::Info { sequence: 5 }).unwrap();
+		producer.create_group(group::Info { sequence: 3 }).unwrap();
+
+		let groups = producer.consume().cached_groups();
+		let sequences: Vec<u64> = groups.iter().map(|(group, _)| group.sequence).collect();
+		assert_eq!(
+			sequences,
+			vec![5, 3],
+			"warm snapshot must follow arrival, not sequence order"
+		);
 	}
 
 	#[test]

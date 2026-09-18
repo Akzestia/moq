@@ -52,12 +52,12 @@ impl Consumer {
 			.await?;
 		// A decoder often opens on a track that is already cached: a replacement
 		// decoder subscribes while its predecessor still holds groups, and a
-		// rendition switched away from and back to stays warm for
-		// `TRACK_IDLE_LINGER`. A caller that asked for `Start::Latest` wants
-		// none of that backlog, because a cursor starting at sequence zero
-		// replays every cached group at decode speed before reaching live
-		// media, which on a thirty-second retention is half a minute of pictures raced
-		// through.
+		// rendition switched away from and back to stays warm on the origin for
+		// `TRACK_IDLE_LINGER` (cached groups, not an upstream subscription). A
+		// caller that asked for `Start::Latest` wants none of that backlog,
+		// because a cursor starting at sequence zero replays every cached group
+		// at decode speed before reaching live media, which on a thirty-second
+		// retention is half a minute of pictures raced through.
 		//
 		// This moves the local read cursor and deliberately not
 		// `Subscription::group_start`. That field is a request to the publisher,
