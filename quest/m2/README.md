@@ -47,6 +47,17 @@ before format-specific metadata. Unrelated areas can proceed in parallel.
 
 - [Origin narrowing](/quest/m2/origin-narrowing.md) - a live origin grant narrows in place and ends the subscriptions it no longer covers, the deafen boundary #2714 asked for
 - [Session revalidate](/quest/m2/session-revalidate.md) - the internal listener re-checks sessions by id, path, or address now, so a kick lands in one round trip and the cadence stops carrying it
+- [Relay embedding](/quest/m2/relay-embed.md) - an embedder reads the resolved config, reuses the CLI merge, registers listener health, and spawns a test relay without TOML strings
+- [Auth embedder](/quest/m2/auth-embedder.md) - the lease owns its re-check clock, a gateway session holds a lease, and `Cluster::admit` scopes and tags origins in one call
+- [Binding parity](/quest/m2/binding-parity.md) - every wrapper reaches every moq-ffi method in its own idiom with moq-net's verbs
+- [Binding docs](/quest/m2/binding-docs.md) - every binding doc sample names a symbol that exists, checked nightly
+- [Gateway embedding](/quest/m2/gateway-embed.md) - moq-hls, moq-rtmp, and moq-rtc expose the loop their binaries run to an in-process embedder
+- [Catalog consumer](/quest/m2/hang-catalog-consumer.md) - reading a catalog is one call in Rust and JS, and JS gains a timeline consumer
+- [Ingest source](/quest/m2/net-ingest-source.md) - an announce says whether the broadcast entered on this relay or a peer
+- [Headless player](/quest/m2/watch-player.md) - `Watch.Player` assembles the pipeline the element, the room, and moq.pro each rebuild
+- [@moq/net additive](/quest/m2/js-net-additive.md) - a live-broadcasts getter, `Table.dynamic`, credential refresh before redial, inferred `share`
+- [Last frame duration](/quest/m2/mux-last-frame-duration.md) - a group's final frame keeps its duration on 90 kHz and nanosecond imports
+- [Snapshot clobber](/quest/m2/json-modify-clobber.md) - a snapshot edit fails on a shape mismatch instead of seeding a default
 - [Binding audio tests](/quest/m2/binding-audio-tests.md) - every binding proves the Opus frame duration and throwing setters it exposes, and smoke-full publishes audio with an explicit config
 - [Decode format](/quest/m2/ffi-decode-format.md) - the C-only decode pixel format knob reaches every uniffi binding
 - [JSON mutate](/quest/m2/json-mutate.md) - Rust gains the closure edit JS already has, beside the guard
@@ -69,7 +80,7 @@ before format-specific metadata. Unrelated areas can proceed in parallel.
 - [Play audio rendition gap](/quest/m2/play-audio-rendition-gap.md) - moq play: a retired audio rendition drains its sink before the replacement fills one, so the switch costs a `--delay` of silence
 - [JavaScript FETCH](/quest/m2/js-fetch.md) - generic on-demand group serving and IETF FETCH for browser publishers
 - [Archive](/quest/m2/archive/README.md) - record selected tracks to any object_store and replay them over FETCH or derived HLS, on the catalog and store the release ships
-- [Wildcard](/quest/m2/wildcard/README.md) - a relay resolves subscriptions against advertised patterns, a service advertises a path pattern it could serve instead of enumerating broadcasts, and the browser player treats a covering pattern as availability
+- [Wildcard](/quest/m2/wildcard/README.md) - a relay resolves subscriptions against advertised prefixes, a service claims the prefix it could serve and refuses the rest instead of enumerating broadcasts, and the browser player treats a covering claim as availability
 - [#2152](/quest/m2/2152-libmoq-c-abi-catch-up-with-the-moq-ffi-surface.md) - libmoq accepts sessions, the moq-ffi call C still lacks
 - [js/publish discontinuity](/quest/m2/js-publish-discontinuity.md) - the JS container producer and js/publish emit the same marker group on encoder restart
 - [Failure artifacts](/quest/m2/qa-failure-artifacts.md) - a failing harness run keeps its run directory and a Playwright trace, and CI uploads them
@@ -151,7 +162,6 @@ before format-specific metadata. Unrelated areas can proceed in parallel.
 - [SRT import stats](/quest/m2/srt-import-stats.md) - the SRT gateway reports the same per-stream counters instead of nothing
 - [Text availability](/quest/m2/text-schema.md) - a text track publishes its own coverage index instead of copying the media timeline
 - [SRT metadata parity](/quest/m2/srt-metadata.md) - the SRT publisher preserves MPEG-TS metadata byte-faithfully like the CLI importer
-- [SRT rejection reason](/quest/m2/srt-reject-reason.md) - a refused SRT client learns the reason on the wire instead of one generic forbidden
 - [ID3 catalog section](/quest/m2/id3.md) - timed ID3 as a first-class container-neutral catalog section
 - [fMP4 emsg](/quest/m2/emsg.md) - event messages survive fMP4 import instead of being silently discarded
 - [FLV script tags](/quest/m2/flv-script.md) - onMetaData and AMF data messages survive RTMP and FLV import
