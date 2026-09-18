@@ -12,7 +12,7 @@ The TypeScript twin of [`moq-auth`](/lib/rs/moq-auth). `RequestSchema` and
 what an auth server answers, so a Worker or a Node server implements the
 contract with one import. Generate keys (HMAC, RSA, ECDSA, EdDSA, individually
 or as a JWK set), `Key.sign` and `Key.verify` tokens, and `authorize` a connection path
-against the claims exactly as the relay does. Tokens are interchangeable with
+against the claims exactly as `moq auth serve` does. Tokens are interchangeable with
 the Rust side. Grants and claims are
 [`Pattern`](https://www.npmjs.com/package/@moq/pattern) unions: `foo` is one
 broadcast, `foo/**` is a subtree, `**` is everything.

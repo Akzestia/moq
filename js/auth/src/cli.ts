@@ -95,7 +95,7 @@ program
 	.command("verify")
 	.description("Verify a token, writing the payload to stdout")
 	.requiredOption("--key <path>", "Path to the key file")
-	.option("--in <path>", "Path to read the token from. Use - for stdin", "-")
+	.option("--in <path>", "Path to read the token from. Use - for stdin.", "-")
 	.addOption(new Option("--root <root>", "Path to authorize the token against").hideHelp())
 	.action(async (options) => {
 		try {

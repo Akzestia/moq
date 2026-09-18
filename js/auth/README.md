@@ -88,7 +88,7 @@ moq-auth sign --key "root.jwk" \
 
 ### Verifying
 
-You can also verify a token, then scope it to a connection path the way a relay does:
+You can also verify a token, then scope it to a connection path the way `moq auth serve` does:
 
 ```typescript
 import { authorize, Key } from "@moq/auth";
