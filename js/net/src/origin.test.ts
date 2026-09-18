@@ -964,6 +964,52 @@ test("reject surfaces the error from demand", async () => {
 	origin.close();
 });
 
+test("a shared reject still surfaces from demand", async () => {
+	const origin = new Producer();
+	const handle = origin.dynamic("live/**");
+	const consumer = origin.consume();
+	const it = handle.requested();
+
+	const request = origin.request(Path.from("live/cam"));
+	const pending = consumer.demand(Path.from("live/cam"));
+	const { value: req } = await it.next();
+	const err = new Error("unserved");
+	req?.reject(err);
+	await expect(pending).rejects.toBe(err);
+	await settle();
+	expect(request.active.peek()).toBeUndefined();
+	const next = it.next();
+	expect(await Promise.race([next.then(() => "queued"), settle().then(() => "idle")])).toBe("idle");
+
+	request.close();
+	handle.close();
+	origin.close();
+});
+
+test("a request refusal does not keep demand from asking again", async () => {
+	const origin = new Producer();
+	const handle = origin.dynamic("live/**");
+	const consumer = origin.consume();
+	const it = handle.requested();
+
+	const request = origin.request(Path.from("live/cam"));
+	const { value: first } = await it.next();
+	first?.reject(new Error("unserved"));
+	request.close();
+	await settle();
+
+	const pending = consumer.demand(Path.from("live/cam"));
+	const { value: second } = await it.next();
+	expect(second?.path).toBe(Path.from("live/cam"));
+	const produced = new BroadcastProducer();
+	second?.accept(produced);
+	await expect(pending).resolves.toBeDefined();
+
+	handle.close();
+	produced.close();
+	origin.close();
+});
+
 test("advancing requested without settling rejects the previous request", async () => {
 	const origin = new Producer();
 	const handle = origin.dynamic("live/**");
@@ -985,6 +1031,60 @@ test("advancing requested without settling rejects the previous request", async 
 
 	handle.close();
 	produced.close();
+	origin.close();
+});
+
+test("a rejected request is not asked of the same route again", async () => {
+	const origin = new Producer();
+	const handle = origin.dynamic("live/**");
+	const it = handle.requested();
+
+	const request = origin.request(Path.from("live/cam"));
+	const { value: first } = await it.next();
+	expect(first?.path).toBe(Path.from("live/cam"));
+	first?.reject(new Error("unserved"));
+	await settle();
+
+	// A refusal is authoritative: the path resolves to nothing rather than landing back on
+	// the queue, so the handler is asked once and the request reads as unroutable.
+	expect(request.active.peek()).toBeUndefined();
+	expect(request.unroutable.peek()).toBe(true);
+	const next = it.next();
+	expect(await Promise.race([next.then(() => "queued"), settle().then(() => "idle")])).toBe("idle");
+
+	// A fresh request asks again: the refusal was the request's own, not the path's.
+	request.close();
+	await settle();
+	const retry = origin.request(Path.from("live/cam"));
+	expect((await next).value?.path).toBe(Path.from("live/cam"));
+
+	retry.close();
+	handle.close();
+	origin.close();
+});
+
+test("a rejected request falls through to the next-best route", async () => {
+	const origin = new Producer();
+	const consumer = origin.consume();
+	const narrow = origin.dynamic("live/**");
+	const served = new BroadcastProducer();
+	served.createTrack("video");
+	const disposeWide = serve(origin, Path.from(""), provider(served));
+
+	const request = consumer.request(Path.from("live/cam"));
+	const { value: req } = await narrow.requested().next();
+	req?.reject(new Error("unserved"));
+	await settle();
+
+	// The narrow route refused, so the broader one answers instead of the path black-holing.
+	const track = request.active.peek()?.subscribe("video");
+	expect(track).toBeDefined();
+	track?.close();
+
+	request.close();
+	narrow.close();
+	disposeWide();
+	served.close();
 	origin.close();
 });
 

@@ -33,11 +33,18 @@ export { isAnonymous } from "./hop.ts";
  * `answer` outlives a session: the answering session clears it when it dies and the next one
  * answers again, which is what makes a request span reconnects.
  *
+ * `refused` holds the route entries whose handler rejected the path. A refusal is
+ * authoritative: the entry is never asked again while it stands (a reconnect is a fresh
+ * entry), and the path resolves through the next-best route or to nothing. Without it a
+ * rejection would refresh the path straight back onto the same queue, and a handler that
+ * keeps saying no would be asked forever.
+ *
  * @internal
  */
 export interface RequestSlot {
 	count: number;
 	answer?: broadcast.Consumer;
+	readonly refused: Set<RouteEntry>;
 	readonly route: Signal<broadcast.Consumer | undefined>;
 }
 
@@ -48,8 +55,10 @@ export interface RequestSlot {
  * Newest entry per prefix is the one requests resolve through. An originated
  * entry is forwarded by sessions; a received one is not, so a shared origin
  * cannot echo a peer's announcements back to it.
+ *
+ * @internal
  */
-interface RouteEntry {
+export interface RouteEntry {
 	readonly identity: object;
 	readonly route: Signal<Route>;
 	readonly originated: boolean;
@@ -66,9 +75,14 @@ class ServeState {
 	pending = new Map<Path.Valid, BroadcastRequest>();
 	served = new Map<Path.Valid, broadcast.Consumer>();
 	rejected = new Map<Path.Valid, Error>();
+	// demand() is the only reader of `rejected`. A Consumer.request refusal never
+	// re-enqueues, so storing the error without a waiter would pin every unique
+	// path until the route dies.
+	demanding = new Map<Path.Valid, number>();
 	closed = new Once<Error | null>();
 	settled = new Signal(0);
 	onChange: (path: Path.Valid) => void = () => {};
+	onReject: (path: Path.Valid) => void = () => {};
 
 	enqueue(path: Path.Valid): void {
 		if (this.closed.peek() !== undefined) return;
@@ -109,8 +123,8 @@ class ServeState {
 	reject(request: BroadcastRequest, err: Error): void {
 		if (this.pending.get(request.path) !== request) return;
 		this.pending.delete(request.path);
-		this.rejected.set(request.path, err);
-		this.onChange(request.path);
+		if (this.demanding.has(request.path)) this.rejected.set(request.path, err);
+		this.onReject(request.path);
 		this.settled.update((n) => n + 1);
 	}
 
@@ -131,6 +145,8 @@ class ServeState {
 			this.onChange(path);
 		}
 		this.served.clear();
+		this.rejected.clear();
+		this.demanding.clear();
 		this.settled.update((n) => n + 1);
 	}
 }
@@ -194,7 +210,15 @@ class OriginState {
 	refresh(path: Path.Valid): void {
 		const slot = this.requests.peek()?.get(path);
 		if (!slot) return;
-		slot.route.set(this.route(path, slot.answer));
+		slot.route.set(this.route(path, slot));
+	}
+
+	/** Record that `entry` refused `path` and re-route the requests watching it. */
+	refuse(path: Path.Valid, entry: RouteEntry): void {
+		const slot = this.requests.peek()?.get(path);
+		if (!slot) return;
+		slot.refused.add(entry);
+		slot.route.set(this.route(path, slot));
 	}
 
 	/**
@@ -208,15 +232,16 @@ class OriginState {
 		const shaped = parsed.asPrefix();
 		const covers = (path: Path.Valid) =>
 			shaped !== undefined ? Path.hasPrefix(Path.from(shaped), path) : parsed.matches(path);
+		const requests = this.requests.peek();
 		for (const [path, cached] of [...this.materialized]) {
 			if (!covers(path)) continue;
-			if (cached.entry !== this.bestEntry(path)) {
+			if (cached.entry !== this.bestEntry(path, requests?.get(path)?.refused)) {
 				this.materialized.delete(path);
 				cached.front.close();
 			}
 		}
-		for (const [path, slot] of this.requests.peek() ?? []) {
-			if (covers(path)) slot.route.set(this.route(path, slot.answer));
+		for (const [path, slot] of requests ?? []) {
+			if (covers(path)) slot.route.set(this.route(path, slot));
 		}
 	}
 
@@ -253,19 +278,20 @@ class OriginState {
 		cached.front.close();
 	}
 
-	/** The newest entry on the most specific route covering `path`, if any. */
-	bestEntry(path: Path.Valid): RouteEntry | undefined {
+	/** The newest entry on the most specific route covering `path`, skipping `refused`, if any. */
+	bestEntry(path: Path.Valid, refused?: ReadonlySet<RouteEntry>): RouteEntry | undefined {
 		let bestPrefix: Path.Valid | undefined;
 		let best: RouteEntry | undefined;
 		for (const [key, entries] of this.routes.peek() ?? []) {
-			if (!entries[0]) continue;
+			const entry = entries.find((candidate) => !refused?.has(candidate));
+			if (!entry) continue;
 			const parsed = Path.Pattern.parse(key);
 			const prefix = parsed.asPrefix();
 			if (prefix === undefined) continue;
 			if (!Path.hasPrefix(Path.from(prefix), path)) continue;
 			if (bestPrefix === undefined || prefix.length > bestPrefix.length) {
 				bestPrefix = Path.from(prefix);
-				best = entries[0];
+				best = entry;
 			}
 		}
 		return best;
@@ -279,11 +305,11 @@ class OriginState {
 	 * the providing session's subscription, repeats share it, and a provider change (the
 	 * route retracting, a better session taking over) swaps it out.
 	 */
-	route(path: Path.Valid, answer?: broadcast.Consumer): broadcast.Consumer | undefined {
+	route(path: Path.Valid, slot: Pick<RequestSlot, "answer" | "refused">): broadcast.Consumer | undefined {
 		const local = this.local.peek()?.get(path);
 		if (local) return local;
 
-		const entry = this.bestEntry(path);
+		const entry = this.bestEntry(path, slot.refused);
 		const cached = this.materialized.get(path);
 		if (cached && cached.entry === entry) {
 			if (cached.front.closed.peek() === undefined) return cached.front;
@@ -292,7 +318,7 @@ class OriginState {
 			this.materialized.delete(path);
 			cached.front.close();
 		}
-		if (!entry?.server) return answer;
+		if (!entry?.server) return slot.answer;
 
 		const served = entry.server.served.get(path);
 		if (served && served.closed.peek() === undefined) {
@@ -467,6 +493,7 @@ export class Producer implements Table {
 			originated,
 			server,
 		};
+		server.onReject = (path) => this.#state.refuse(path, entry);
 
 		let closed = false;
 		this.#state.routes.mutate((routes) => {
@@ -494,6 +521,8 @@ export class Producer implements Table {
 				entries.splice(index, 1);
 				if (entries.length === 0) routes?.delete(prefix);
 			});
+			// A retracted entry can never be picked again, so the refusals pinned to it are dead weight.
+			for (const slot of this.#state.requests.peek()?.values() ?? []) slot.refused.delete(entry);
 			server.close();
 			this.#state.rebuildOriginated();
 			this.#state.refreshPrefix(prefix);
@@ -853,7 +882,8 @@ export class Consumer {
 			// value as the baseline the next change is compared against, and never flushes to
 			// clear it, so a seeded route retracting to undefined would look like no change and
 			// notify nobody.
-			const created: RequestSlot = { count: 0, route: new Signal(this.#state.route(path)) };
+			const refused = new Set<RouteEntry>();
+			const created: RequestSlot = { count: 0, refused, route: new Signal(this.#state.route(path, { refused })) };
 			slot = created;
 			this.#state.requests.mutate((map) => {
 				map?.set(path, created);
@@ -1045,21 +1075,28 @@ export class Consumer {
 		if (live && live.closed.peek() === undefined) return live;
 
 		server.enqueue(path);
-		for (;;) {
-			const served = server.served.get(path);
-			if (served && served.closed.peek() === undefined) return served;
-			const rejected = server.rejected.get(path);
-			if (rejected) {
-				server.rejected.delete(path);
-				throw rejected;
+		server.demanding.set(path, (server.demanding.get(path) ?? 0) + 1);
+		try {
+			for (;;) {
+				const served = server.served.get(path);
+				if (served && served.closed.peek() === undefined) return served;
+				const rejected = server.rejected.get(path);
+				if (rejected) {
+					server.rejected.delete(path);
+					throw rejected;
+				}
+				const closed = server.closed.peek();
+				if (closed !== undefined) {
+					if (closed) throw closed;
+					return undefined;
+				}
+				if (!server.pending.has(path)) return undefined;
+				await Signal.race(server.settled, server.closed);
 			}
-			const closed = server.closed.peek();
-			if (closed !== undefined) {
-				if (closed) throw closed;
-				return undefined;
-			}
-			if (!server.pending.has(path)) return undefined;
-			await Signal.race(server.settled, server.closed);
+		} finally {
+			const n = (server.demanding.get(path) ?? 1) - 1;
+			if (n <= 0) server.demanding.delete(path);
+			else server.demanding.set(path, n);
 		}
 	}
 }
