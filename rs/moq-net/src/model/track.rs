@@ -22,7 +22,7 @@ use super::Cap;
 pub use super::subscription::{Position, Subscription};
 
 use std::{
-	collections::{BTreeMap, VecDeque},
+	collections::{BTreeMap, HashSet, VecDeque},
 	ops::{Bound, RangeBounds},
 	sync::Arc,
 	sync::OnceLock,
@@ -2225,8 +2225,9 @@ impl Consumer {
 					}
 				}
 				// Fetched backfill never enters arrival; keep it for sequence fetches.
+				let mut copied: HashSet<u64> = out.iter().map(|(group, _)| group.sequence).collect();
 				for (sequence, slot) in state.lookup.iter() {
-					if !slot.group.is_aborted() && !out.iter().any(|(group, _)| group.sequence == *sequence) {
+					if !slot.group.is_aborted() && copied.insert(*sequence) {
 						out.push((slot.group.clone(), slot.visible));
 					}
 				}
