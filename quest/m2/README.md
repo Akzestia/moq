@@ -82,6 +82,7 @@ before format-specific metadata. Unrelated areas can proceed in parallel.
 - [Keyframe trigger](/quest/m2/keyframe-trigger.md) - an application can ask the built-in capture encoder for a keyframe
 - [QoS](/quest/m2/qos/README.md) - broadcast health: relay starvation and timeliness histograms, and client stats broadcasts from publishers and viewers
 - [Drain](/quest/m2/drain/README.md) - relay restarts drain sessions over GOAWAY instead of hard-dropping them
+- [Transport upgrade](/quest/m2/transport-upgrade/README.md) - a session that came up over WebSocket moves to QUIC once the QUIC dial lands, handing over at a group boundary
 - [Custom QUIC](/quest/m2/quic/README.md) - noq as the upstream for per-stream
   ACK progress, reliable reset, hierarchical scheduling, and qmux
 - [Scope track priority](/quest/m2/track-priority-scope.md) - priority orders one owner's streams, and a shared cluster session is fair across tenants
