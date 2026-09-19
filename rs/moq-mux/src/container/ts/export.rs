@@ -74,8 +74,8 @@ pub struct Export<E: catalog::Catalog = ()> {
 	tracks: HashMap<String, Track>,
 	/// Continuity counter per PID (PAT, PMT, and each elementary stream).
 	counters: HashMap<u16, ContinuityCounter>,
-	/// Counter state before the uncommitted span, restored if a rewind discards it.
-	span_counters: Option<HashMap<u16, ContinuityCounter>>,
+	/// Muxer state before the uncommitted span, restored if a rewind discards it.
+	span_state: Option<SpanState>,
 	/// PMT program-level descriptors captured on import, re-emitted in the PMT.
 	program_descriptors: Vec<catalog::Descriptor>,
 	/// Transport/service identity captured on import, used to rebuild a consistent
@@ -137,6 +137,11 @@ struct Pending {
 	discontinuity: u64,
 }
 
+struct SpanState {
+	counters: HashMap<u16, ContinuityCounter>,
+	last_dts: HashMap<String, Option<u64>>,
+}
+
 struct Track {
 	source: ExportSource,
 	pending: Option<Pending>,
@@ -162,13 +167,33 @@ struct Track {
 }
 
 impl Track {
-	/// A fenced rendition must rewind its own clock before joining the program.
-	/// Forward markers on its old timeline cannot admit stale media.
-	fn admit(&mut self, pending: Pending, epoch: u64) -> Option<Pending> {
-		if self.epoch == epoch
-			|| (pending.discontinuity != self.discontinuity
-				&& self.timeline.is_none_or(|last| pending.frame.timestamp < last))
-		{
+	/// Whether this rendition may contribute its pending frame right now.
+	///
+	/// A fenced rendition rejoins on its own rewind, as before, or when the program
+	/// clock driven by the joined tracks has already passed its pending frame. A
+	/// fenced frame that is neither is parked, not discarded: it may still be fresh
+	/// (the clock simply hasn't reached it yet), and discarding it on arrival is
+	/// what fenced a continuous peer for good. Only a new boundary on the old
+	/// timeline is definitively stale, and only that is discarded.
+	///
+	/// On a true rewind the peer's stale frames sit far above the reset clock, so
+	/// they stay parked until its own boundary supersedes them, while on a content
+	/// join the reset clock sits a few milliseconds below the peer's next frame and
+	/// it rejoins within one frame. The exit is a clock comparison, never a
+	/// deadline: a frame at or below the watermark is fresh, a frame above it may
+	/// still be stale. `None` (no joined track has emitted yet) parks everything.
+	fn admit(&mut self, pending: Pending, epoch: u64, watermark: Option<Timestamp>) -> Option<Pending> {
+		if self.epoch == epoch {
+			return Some(pending);
+		}
+		let changed = pending.discontinuity != self.discontinuity;
+		if changed && self.timeline.is_none_or(|last| pending.frame.timestamp < last) {
+			return Some(pending);
+		}
+		if watermark.is_some_and(|mark| pending.frame.timestamp <= mark) {
+			return Some(pending);
+		}
+		if !changed {
 			return Some(pending);
 		}
 		self.discontinuity = pending.discontinuity;
@@ -269,7 +294,7 @@ impl<E: catalog::Catalog> Export<E> {
 			latency: Duration::ZERO,
 			tracks: HashMap::new(),
 			counters: HashMap::new(),
-			span_counters: None,
+			span_state: None,
 			program_descriptors: Vec::new(),
 			program: None,
 			si: BTreeMap::new(),
@@ -378,18 +403,17 @@ impl<E: catalog::Catalog> Export<E> {
 			}
 			let Some(name) = self.pick_next_track() else { break };
 			let pending = self.tracks.get_mut(&name).unwrap().pending.take().unwrap();
-			let changed = pending.discontinuity != self.tracks[&name].discontinuity;
+			let Pending { frame, discontinuity } = pending;
+			let changed = discontinuity != self.tracks[&name].discontinuity;
 			if changed {
 				let joined = self.tracks[&name].epoch == self.epoch;
 				if joined {
-					let backwards = self.tracks[&name]
-						.timeline
-						.is_some_and(|last| pending.frame.timestamp < last);
+					let backwards = self.tracks[&name].timeline.is_some_and(|last| frame.timestamp < last);
 					if !backwards && !self.pending.is_empty() {
 						// A forward boundary ends valid media rather than reneging it.
 						// Return that tail under the old generation before adopting the new one.
 						self.emit(None)?;
-						self.tracks.get_mut(&name).unwrap().pending = Some(pending);
+						self.tracks.get_mut(&name).unwrap().pending = Some(Pending { frame, discontinuity });
 						continue;
 					}
 					// A backwards boundary fences its peers, so one program break costs one
@@ -400,12 +424,18 @@ impl<E: catalog::Catalog> Export<E> {
 					self.rewind(backwards);
 				}
 				let track = self.tracks.get_mut(&name).unwrap();
-				track.discontinuity = pending.discontinuity;
+				track.discontinuity = discontinuity;
 				track.epoch = self.epoch;
 				track.last_dts = None;
 				track.timeline = None;
+			} else if self.tracks[&name].epoch != self.epoch {
+				// Watermark rejoin: the program clock passed this fenced frame, so it
+				// is fresh rather than stale. It carries no boundary of its own, so
+				// the decode clock and high-water mark carry over instead of resetting.
+				let track = self.tracks.get_mut(&name).unwrap();
+				track.discontinuity = discontinuity;
+				track.epoch = self.epoch;
 			}
-			let frame = pending.frame;
 			let track = self.tracks.get_mut(&name).unwrap();
 			track.timeline = Some(track.timeline.map_or(frame.timestamp, |last| last.max(frame.timestamp)));
 			self.advance(frame.timestamp)?;
@@ -446,8 +476,17 @@ impl<E: catalog::Catalog> Export<E> {
 	fn fill(&mut self, waiter: &kio::Waiter) -> crate::Result<()> {
 		let waiting_for_header = self.psi.is_none();
 		let video_start = self.video_start;
+		let epoch = self.epoch;
+		let watermark = self.watermark;
 		for track in self.tracks.values_mut() {
-			if track.pending.is_some() || track.finished {
+			if track.finished {
+				continue;
+			}
+			// A joined pending frame is already buffered. A fenced parked one may
+			// still be superseded by a newer boundary on its own timeline, so those
+			// keep polling; same-timeline arrivals behind the park are dropped one
+			// per pass rather than drained, bounding the loss to the parked window.
+			if track.pending.is_some() && track.epoch == epoch {
 				continue;
 			}
 			let is_video = matches!(track.kind, Kind::Video(_));
@@ -458,7 +497,18 @@ impl<E: catalog::Catalog> Export<E> {
 							continue;
 						}
 						let discontinuity = track.source.discontinuity();
-						let Some(pending) = track.admit(Pending { frame, discontinuity }, self.epoch) else {
+						// A newer boundary supersedes a parked fenced frame; an arrival
+						// on the same timeline stays behind the earliest park.
+						if track.pending.is_some() {
+							if discontinuity == track.pending.as_ref().unwrap().discontinuity {
+								// The source may have returned buffered data without registering
+								// the waiter. Schedule another bounded pass before parking.
+								waiter.waker().wake_by_ref();
+								break;
+							}
+							track.pending = None;
+						}
+						let Some(pending) = track.admit(Pending { frame, discontinuity }, epoch, watermark) else {
 							continue;
 						};
 						let changed = pending.discontinuity != track.discontinuity;
@@ -659,11 +709,17 @@ impl<E: catalog::Catalog> Export<E> {
 	}
 
 	/// Discard uncommitted bytes and restart the program clock. On a backwards
-	/// boundary, peers must cross their own boundary before joining this generation.
+	/// boundary, peers stay fenced until their own rewind or until the reset
+	/// clock passes their pending frame (see [`Track::admit`]).
 	fn rewind(&mut self, backwards: bool) {
 		self.epoch += 1;
-		if let Some(counters) = self.span_counters.take() {
-			self.counters = counters;
+		if let Some(state) = self.span_state.take() {
+			self.counters = state.counters;
+			for (name, last_dts) in state.last_dts {
+				if let Some(track) = self.tracks.get_mut(&name) {
+					track.last_dts = last_dts;
+				}
+			}
 		}
 		self.pending.clear();
 		self.keyframes.clear();
@@ -677,12 +733,12 @@ impl<E: catalog::Catalog> Export<E> {
 		self.video_start = None;
 		self.pcr_discontinuity = true;
 		for track in self.tracks.values_mut() {
-			track.last_dts = None;
 			if !backwards || track.timeline.is_none() {
 				track.epoch = self.epoch;
+				track.last_dts = None;
 			}
 			if let Some(pending) = track.pending.take() {
-				track.pending = track.admit(pending, self.epoch);
+				track.pending = track.admit(pending, self.epoch, None);
 			}
 		}
 	}
@@ -868,9 +924,28 @@ impl<E: catalog::Catalog> Export<E> {
 	}
 
 	/// A boundary takes precedence over stale peer data; otherwise use timestamp order.
+	///
+	/// Parked fenced frames above the program clock wait for it to pass them rather
+	/// than advancing it: picking one early would drag the clock up to stale media
+	/// on a true rewind. At end of stream no clock advancement is coming, so the
+	/// smallest park is released instead of stranded.
 	fn pick_next_track(&self) -> Option<String> {
+		let ready = |track: &Track| {
+			if track.epoch == self.epoch {
+				return true;
+			}
+			let Some(pending) = track.pending.as_ref() else {
+				return false;
+			};
+			let changed = pending.discontinuity != track.discontinuity;
+			if changed && track.timeline.is_none_or(|last| pending.frame.timestamp < last) {
+				return true;
+			}
+			self.watermark.is_some_and(|mark| pending.frame.timestamp <= mark)
+		};
 		self.tracks
 			.iter()
+			.filter(|(_, t)| t.pending.is_some() && ready(t))
 			.filter_map(|(n, t)| t.pending.as_ref().map(|p| (p.frame.timestamp, t.pid, n)))
 			.min_by_key(|(timestamp, pid, name)| {
 				let track = &self.tracks[*name];
@@ -879,6 +954,17 @@ impl<E: catalog::Catalog> Export<E> {
 				(!backwards, *timestamp, *pid, *name)
 			})
 			.map(|(_, _, name)| name.clone())
+			.or_else(|| {
+				if self.tracks.values().all(|t| t.finished) {
+					self.tracks
+						.iter()
+						.filter_map(|(n, t)| t.pending.as_ref().map(|p| (p.frame.timestamp, t.pid, n)))
+						.min_by_key(|(timestamp, pid, name)| (*timestamp, *pid, *name))
+						.map(|(_, _, name)| name.clone())
+				} else {
+					None
+				}
+			})
 	}
 
 	/// Packetize one media frame into the open span, re-emitting PAT/PMT before
@@ -888,8 +974,15 @@ impl<E: catalog::Catalog> Export<E> {
 	/// to isn't known until a later timestamp measures the span (see
 	/// [`Self::advance`]).
 	fn mux(&mut self, name: &str, frame: Frame) -> anyhow::Result<()> {
-		if self.span_counters.is_none() {
-			self.span_counters = Some(self.counters.clone());
+		if self.span_state.is_none() {
+			self.span_state = Some(SpanState {
+				counters: self.counters.clone(),
+				last_dts: self
+					.tracks
+					.iter()
+					.map(|(name, track)| (name.clone(), track.last_dts))
+					.collect(),
+			});
 		}
 		let track = self.tracks.get(name).context("missing track")?;
 		let pid = track.pid;
@@ -1058,7 +1151,7 @@ impl<E: catalog::Catalog> Export<E> {
 	/// decode-clock reserve of any track so every PES unit, whichever rendition it
 	/// belongs to, decodes at or after the clock that precedes it.
 	fn emit(&mut self, span: Option<u128>) -> anyhow::Result<()> {
-		self.span_counters = None;
+		self.span_state = None;
 		let bytes = std::mem::take(&mut self.pending);
 		let keyframes = std::mem::take(&mut self.keyframes);
 		let Some(to) = self.low.take() else { return Ok(()) };
