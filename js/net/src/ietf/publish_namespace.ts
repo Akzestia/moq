@@ -1,4 +1,4 @@
-import { ProtocolViolation, reason } from "../error.ts";
+import { ProtocolViolation, reason, SessionError, StreamError } from "../error.ts";
 import type * as Path from "../path.ts";
 import type { Reader, Writer } from "../stream.ts";
 import * as Cluster from "./cluster.ts";
@@ -103,8 +103,23 @@ export class PublishNamespaceUpdate {
 		return Message.encode(w, (wr) => this.#encode(wr, version));
 	}
 
+	/**
+	 * Decode the message. A truncated or trailing body, a draft with no such message, or a
+	 * malformed parameter block surfaces as a {@link ProtocolViolation}, which the session
+	 * dispatch closes over. A stream reset or session ending remains transport-local.
+	 */
 	static async decode(r: Reader, version: IetfVersion): Promise<PublishNamespaceUpdate> {
-		return Message.decode(r, (rd) => PublishNamespaceUpdate.#decode(rd, version));
+		try {
+			return await Message.decode(r, (rd) => PublishNamespaceUpdate.#decode(rd, version));
+		} catch (err) {
+			if (err instanceof ProtocolViolation || err instanceof SessionError || err instanceof StreamError)
+				throw err;
+			if (typeof err === "object" && err !== null) {
+				const source = (err as { source?: unknown }).source;
+				if (source === "session" || source === "stream") throw err;
+			}
+			throw new ProtocolViolation(reason(err), { cause: err });
+		}
 	}
 
 	static #modern(version: IetfVersion) {
@@ -119,13 +134,7 @@ export class PublishNamespaceUpdate {
 		if (version === Version.DRAFT_17) {
 			await r.u62(); // required_request_id_delta (draft-17 only, removed in draft-18 per #1615)
 		}
-		// A malformed block is the peer's violation, as it is on the advertisement itself.
-		let params: Parameters;
-		try {
-			params = await Parameters.decode(r, version);
-		} catch (err) {
-			throw new ProtocolViolation(reason(err), { cause: err });
-		}
+		const params = await Parameters.decode(r, version);
 		return new PublishNamespaceUpdate({ requestId, update: Cluster.updateFromParams(params) });
 	}
 }
