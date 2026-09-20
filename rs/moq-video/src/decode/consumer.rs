@@ -26,7 +26,7 @@ pub struct Consumer {
 	pending: VecDeque<Frame>,
 	/// Whether the ended track's decoder has already been drained.
 	drained: bool,
-	/// Last container discontinuity observed. A change starts a fresh codec epoch.
+	/// Last container playhead generation observed.
 	discontinuity: u64,
 }
 
@@ -44,16 +44,20 @@ impl Consumer {
 		let name = name.into();
 		let track = broadcast.track(&name)?;
 		let mut subscriber = track
-			.subscribe(moq_net::track::Subscription::default().with_priority(hang::catalog::PRIORITY.video))
+			.subscribe(
+				moq_net::track::Subscription::default()
+					.with_priority(hang::catalog::PRIORITY.video)
+					.with_max_age(config.max_age),
+			)
 			.await?;
 		// A decoder often opens on a track that is already cached: a replacement
 		// decoder subscribes while its predecessor still holds groups, and a
-		// rendition switched away from and back to stays warm for
-		// `TRACK_IDLE_LINGER`. A caller that asked for `Start::Latest` wants
-		// none of that backlog, because a cursor starting at sequence zero
-		// replays every cached group at decode speed before reaching live
-		// media, which on a thirty-second retention is half a minute of pictures raced
-		// through.
+		// rendition switched away from and back to stays warm on the origin for
+		// `TRACK_IDLE_LINGER` (cached groups, not an upstream subscription). A
+		// caller that asked for `Start::Latest` wants none of that backlog,
+		// because a cursor starting at sequence zero replays every cached group
+		// at decode speed before reaching live media, which on a thirty-second
+		// retention is half a minute of pictures raced through.
 		//
 		// This moves the local read cursor and deliberately not
 		// `Subscription::group_start`. That field is a request to the publisher,
@@ -63,17 +67,14 @@ impl Consumer {
 		if config.start == Start::Latest
 			&& let Some(live_edge) = track.latest()
 		{
-			subscriber.start_at(live_edge);
+			subscriber.set_groups(live_edge..);
 		}
 		let track = subscriber;
 		// The catalog says how the track is framed, and it is not always the legacy
 		// wire: `moq import fmp4` publishes CMAF. Reading a moof+mdat fragment as a
 		// varint timestamp plus a payload decodes to garbage rather than failing.
-		let container = moq_mux::catalog::hang::Container::try_from(&catalog.container)?;
-		let mut track = moq_mux::container::Consumer::new(track, container);
-		if let Some(latency) = config.latency_max {
-			track = track.with_latency(latency);
-		}
+		let container = moq_mux::catalog::hang::Container::try_from(catalog)?;
+		let track = moq_mux::container::Consumer::new(track, container);
 
 		Ok(Self {
 			decoder,
@@ -103,10 +104,9 @@ impl Consumer {
 			let mux_frame = self.track.read().await?;
 			let discontinuity = self.track.discontinuity();
 			if discontinuity != self.discontinuity {
-				// The tail belongs to the abandoned codec epoch. Draining resets the
-				// backend for reuse, but none of those pictures may cross the seam.
-				self.decoder.flush().await?;
-				self.pending.clear();
+				// A playhead event re-applies startup delay and skip; the next group
+				// already starts on a keyframe with parameter sets, so the decoder is
+				// not flushed.
 				self.discontinuity = discontinuity;
 			}
 
@@ -141,6 +141,18 @@ mod tests {
 	use bytes::Bytes;
 	use moq_net::Timestamp;
 
+	/// Build an origin producer, spawning its driver on the ambient runtime.
+	fn produce_origin() -> moq_net::origin::Producer {
+		let (producer, driver) = moq_net::origin::Producer::new(moq_net::Hop::random().into());
+		if tokio::runtime::Handle::try_current().is_ok() {
+			tokio::spawn(driver.run(moq_tokio::runtime::Runtime::<()>::new()));
+		} else {
+			// A sync test: nothing polls the driver, and dropping it would tear
+			// the origin down, so leak it and rely on the synchronous half.
+			std::mem::forget(driver);
+		}
+		producer
+	}
 	use super::*;
 	use crate::decode::Kind;
 	use crate::decode::backend::probe;
@@ -166,8 +178,8 @@ mod tests {
 			producer.publish(&encoder.encode(&frame).unwrap()).unwrap();
 		}
 
-		let origin = moq_net::Origin::random().produce();
-		let mut requests = origin.dynamic();
+		let origin = produce_origin();
+		let requests = origin.dynamic("", Default::default()).unwrap();
 		let served = source_subscriber.clone();
 		tokio::spawn(async move {
 			while let Ok(request) = requests.requested_broadcast().await {
@@ -178,7 +190,12 @@ mod tests {
 			.await
 			.unwrap();
 		let source = moq_mux::Source::new(origin.consume(), "test");
-		let mut export = moq_mux::container::fmp4::Export::new(source, catalog);
+		// Both frames are encoded before the export runs, so the exporter needs a budget
+		// wide enough to read them: its REAL_TIME default keeps only the live edge, and
+		// the second `next()` would then block forever waiting for a group that was
+		// skipped.
+		let mut export =
+			moq_mux::container::fmp4::Export::new(source, catalog).with_max_age(std::time::Duration::from_secs(30));
 		let init = export.next().await.unwrap().expect("CMAF init");
 		let fragment = export.next().await.unwrap().expect("CMAF fragment");
 
@@ -217,12 +234,17 @@ mod tests {
 	/// decode speed before the picture reaches live media.
 	#[tokio::test]
 	async fn a_second_consumer_starts_at_the_live_edge() {
-		let mut broadcast = moq_net::broadcast::Info::new().produce();
-		let track = broadcast.create_track("video", hang::container::track_info()).unwrap();
+		let broadcast = moq_net::broadcast::Info::new().produce();
+		let track = broadcast
+			.create_track("video", hang::container::track_info(hang::catalog::PRIORITY.video))
+			.unwrap();
 		// Kept so the aggregated subscription can be read back below.
 		let published = track.clone();
 		let subscriber = broadcast.consume();
-		let mut producer = moq_mux::container::Producer::new(track, moq_mux::catalog::hang::Container::Legacy);
+		let mut producer = moq_mux::container::Producer::new(
+			track,
+			moq_mux::catalog::hang::Container::Legacy(moq_mux::container::Kind::Data),
+		);
 		// A keyframe opens a group, so this is three groups a second apart.
 		for index in 0..3u64 {
 			producer
@@ -249,6 +271,10 @@ mod tests {
 			Config {
 				kind: Kind::Named(probe::BUFFERED_NAME.into()),
 				start: Start::Latest,
+				// Wide enough to keep every group fresh: the age budget on its own
+				// delivers only the live edge, which would pass this test without
+				// `Start::Latest` doing anything.
+				max_age: std::time::Duration::from_secs(10),
 				..Config::new()
 			},
 		)
@@ -267,14 +293,14 @@ mod tests {
 		);
 
 		// The skip is the local read cursor and nothing else. Asking for it
-		// through `Subscription::group_start` would look equivalent and is not:
-		// the field is aggregated across every live subscriber and tells the
+		// through `Subscription::start` would look equivalent and is not: the
+		// floor is aggregated across every live subscriber and tells the
 		// publisher what to send, so naming a cached sequence there rewinds the
 		// track for everyone reading it. A rendition switched away from and back
 		// to is the case that bites, because its cached sequence is stale by
 		// then and the publisher resends the broadcast from it.
 		assert_eq!(
-			published.subscription().and_then(|sub| sub.group_start),
+			published.subscription().and_then(|sub| sub.start),
 			None,
 			"the publisher was asked to rewind the track",
 		);
@@ -289,10 +315,15 @@ mod tests {
 	/// so it is pinned beside the other one.
 	#[tokio::test]
 	async fn the_default_reads_every_cached_group() {
-		let mut broadcast = moq_net::broadcast::Info::new().produce();
-		let track = broadcast.create_track("video", hang::container::track_info()).unwrap();
+		let broadcast = moq_net::broadcast::Info::new().produce();
+		let track = broadcast
+			.create_track("video", hang::container::track_info(hang::catalog::PRIORITY.video))
+			.unwrap();
 		let subscriber = broadcast.consume();
-		let mut producer = moq_mux::container::Producer::new(track, moq_mux::catalog::hang::Container::Legacy);
+		let mut producer = moq_mux::container::Producer::new(
+			track,
+			moq_mux::catalog::hang::Container::Legacy(moq_mux::container::Kind::Data),
+		);
 		for index in 0..3u64 {
 			producer
 				.write(moq_mux::container::Frame {
@@ -319,6 +350,9 @@ mod tests {
 				// The buffered probe rather than the plain one: the plain probe's
 				// event log is process-wide and belongs to the thread-affinity test.
 				kind: Kind::Named(probe::BUFFERED_NAME.into()),
+				// A budget that keeps every group fresh, so the start policy is the
+				// only thing deciding what is read.
+				max_age: std::time::Duration::from_secs(10),
 				..Config::new()
 			},
 		)
@@ -344,10 +378,15 @@ mod tests {
 	/// drains the backend once and returns its tail before reporting the end.
 	#[tokio::test]
 	async fn track_end_drains_buffered_decoder() {
-		let mut broadcast = moq_net::broadcast::Info::new().produce();
-		let track = broadcast.create_track("video", hang::container::track_info()).unwrap();
+		let broadcast = moq_net::broadcast::Info::new().produce();
+		let track = broadcast
+			.create_track("video", hang::container::track_info(hang::catalog::PRIORITY.video))
+			.unwrap();
 		let subscriber = broadcast.consume();
-		let mut producer = moq_mux::container::Producer::new(track, moq_mux::catalog::hang::Container::Legacy);
+		let mut producer = moq_mux::container::Producer::new(
+			track,
+			moq_mux::catalog::hang::Container::Legacy(moq_mux::container::Kind::Data),
+		);
 		for index in 0..2u64 {
 			producer
 				.write(moq_mux::container::Frame {
@@ -389,15 +428,19 @@ mod tests {
 		);
 	}
 
-	/// A declared discontinuity abandons the previous codec epoch. A delayed
-	/// picture from before the seam is drained and discarded before the first new
-	/// keyframe is decoded.
+	/// A declared discontinuity is a playhead event, not a decoder flush. A delayed
+	/// picture from before the seam still surfaces; the next group continues forward.
 	#[tokio::test]
-	async fn discontinuity_discards_buffered_tail() {
-		let mut broadcast = moq_net::broadcast::Info::new().produce();
-		let track = broadcast.create_track("video", hang::container::track_info()).unwrap();
+	async fn discontinuity_does_not_flush_the_decoder() {
+		let broadcast = moq_net::broadcast::Info::new().produce();
+		let track = broadcast
+			.create_track("video", hang::container::track_info(hang::catalog::PRIORITY.video))
+			.unwrap();
 		let subscriber = broadcast.consume();
-		let mut producer = moq_mux::container::Producer::new(track, moq_mux::catalog::hang::Container::Legacy);
+		let mut producer = moq_mux::container::Producer::new(
+			track,
+			moq_mux::catalog::hang::Container::Legacy(moq_mux::container::Kind::Video),
+		);
 		producer
 			.write(moq_mux::container::Frame {
 				timestamp: Timestamp::from_micros(100_000).unwrap(),
@@ -409,7 +452,7 @@ mod tests {
 		producer.discontinuity().unwrap();
 		producer
 			.write(moq_mux::container::Frame {
-				timestamp: Timestamp::ZERO,
+				timestamp: Timestamp::from_micros(200_000).unwrap(),
 				duration: None,
 				payload: Bytes::from_static(b"new access unit"),
 				keyframe: true,
@@ -429,6 +472,7 @@ mod tests {
 			"video",
 			Config {
 				kind: Kind::Named(probe::BUFFERED_NAME.into()),
+				max_age: std::time::Duration::from_secs(10),
 				..Config::new()
 			},
 		)
@@ -439,7 +483,7 @@ mod tests {
 		while let Some(frame) = consumer.read().await.unwrap() {
 			timestamps.push(frame.timestamp.as_micros());
 		}
-		assert_eq!(timestamps, vec![0]);
+		assert_eq!(timestamps, vec![100_000, 200_000]);
 	}
 
 	/// Cancellation while a threaded flush is in flight leaves the sink poisoned.
@@ -449,10 +493,15 @@ mod tests {
 	#[tokio::test]
 	async fn cancelled_track_end_flush_is_not_reported_as_drained() {
 		probe::prepare_blocking_flush();
-		let mut broadcast = moq_net::broadcast::Info::new().produce();
-		let track = broadcast.create_track("video", hang::container::track_info()).unwrap();
+		let broadcast = moq_net::broadcast::Info::new().produce();
+		let track = broadcast
+			.create_track("video", hang::container::track_info(hang::catalog::PRIORITY.video))
+			.unwrap();
 		let subscriber = broadcast.consume();
-		let mut producer = moq_mux::container::Producer::new(track, moq_mux::catalog::hang::Container::Legacy);
+		let mut producer = moq_mux::container::Producer::new(
+			track,
+			moq_mux::catalog::hang::Container::Legacy(moq_mux::container::Kind::Data),
+		);
 		producer.finish().unwrap();
 
 		let catalog = VideoConfig::new(hang::catalog::H264 {
@@ -512,10 +561,15 @@ mod tests {
 		};
 		let catalog = config.probe().await.expect("probe the software encoder");
 
-		let mut broadcast = moq_net::broadcast::Info::new().produce();
-		let track = broadcast.create_track("video", hang::container::track_info()).unwrap();
+		let broadcast = moq_net::broadcast::Info::new().produce();
+		let track = broadcast
+			.create_track("video", hang::container::track_info(hang::catalog::PRIORITY.video))
+			.unwrap();
 		let subscriber = broadcast.consume();
-		let mut producer = moq_mux::container::Producer::new(track, moq_mux::catalog::hang::Container::Legacy);
+		let mut producer = moq_mux::container::Producer::new(
+			track,
+			moq_mux::catalog::hang::Container::Legacy(moq_mux::container::Kind::Data),
+		);
 
 		let mut encoder = Encoder::new(&config).unwrap();
 		let rgba = vec![0x80u8; 320 * 240 * 4];

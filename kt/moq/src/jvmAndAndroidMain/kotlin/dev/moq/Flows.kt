@@ -6,7 +6,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onCompletion
-import uniffi.moq.MoqAnnouncement
+import uniffi.moq.MoqAnnounceUpdate
 import uniffi.moq.MoqAudioConsumer
 import uniffi.moq.MoqAudioFrame
 import uniffi.moq.MoqBroadcastConsumer
@@ -55,7 +55,7 @@ fun MoqCatalogConsumer.updates(): Flow<MoqCatalog> = flow {
 suspend fun MoqBroadcastConsumer.catalog(): MoqCatalog {
     val consumer = subscribeCatalog()
     try {
-        return consumer.next() ?: throw MoqException.Closed("broadcast closed before a catalog was published")
+        return consumer.next() ?: throw MoqException.Closed()
     } finally {
         consumer.cancel()
     }
@@ -137,7 +137,11 @@ fun MoqTrackConsumer.groupsAsArrived(): Flow<MoqGroupConsumer> = flow {
     if (cause is CancellationException) cancel()
 }
 
-/** Stream of timestamped raw frames from one-frame-per-group tracks. */
+/**
+ * Stream of timestamped raw frames from one-frame-per-group tracks.
+ *
+ * Completed empty groups are skipped. The flow ends when the track ends.
+ */
 fun MoqTrackConsumer.frames(): Flow<MoqFrame> = flow {
     while (true) {
         currentCoroutineContext().ensureActive()
@@ -199,13 +203,13 @@ fun MoqGroupConsumer.frames(): Flow<MoqFrame> = flow {
 }
 
 /**
- * Stream of broadcast announcements under a prefix.
+ * Stream of route announcements and retractions under a prefix.
  *
  * Acquires the subscription on first collection and cancels it when collection
  * ends, so callers never touch the underlying handle. Use the raw
  * `announced(prefix)` if you need to hold and cancel the handle yourself.
  */
-fun MoqOriginConsumer.announcements(prefix: String): Flow<MoqAnnouncement> {
+fun MoqOriginConsumer.announcements(prefix: String): Flow<MoqAnnounceUpdate> {
     val consumer = this
     return flow {
         val announced = consumer.announced(prefix)
@@ -220,24 +224,3 @@ fun MoqOriginConsumer.announcements(prefix: String): Flow<MoqAnnouncement> {
     }
 }
 
-/**
- * Stream of route updates for a broadcast: the current route first, then every
- * change (e.g. an upstream failover). Terminates when the broadcast ends.
- *
- * Acquires the watch on first collection and cancels it when collection ends.
- * Use the raw `routeUpdates()` if you need to hold and cancel the handle yourself.
- */
-fun MoqBroadcastConsumer.routes(): Flow<MoqRoute> {
-    val consumer = this
-    return flow {
-        val watch = consumer.routeUpdates()
-        try {
-            while (true) {
-                currentCoroutineContext().ensureActive()
-                emit(watch.next() ?: break)
-            }
-        } finally {
-            watch.cancel()
-        }
-    }
-}

@@ -236,6 +236,7 @@ impl Publication {
 		};
 		let driver = Driver {
 			_broadcast: broadcast,
+			_reservation: None,
 			track: Some(Track::Reserved(reserved)),
 			encode: options.encode,
 			clock: options.clock,
@@ -335,6 +336,8 @@ impl Publication {
 /// ends the driver and releases that identity.
 pub struct Driver<E: CatalogExt = ()> {
 	_broadcast: moq_net::broadcast::Producer,
+	// Held for the driver lifetime once the layout reveals the encoded rate.
+	_reservation: Option<moq_net::bandwidth::Reservation>,
 	track: Option<Track<E>>,
 	/// The codec settings the rendition is built from once the layout is known.
 	encode: Options,
@@ -464,7 +467,13 @@ impl<E: CatalogExt> Driver<E> {
 				}
 			};
 
-			self.track = Some(Track::Encoding(reserved.encode(registered)));
+			let producer = reserved.encode(registered);
+			self._reservation = Some(
+				self.encode
+					.bandwidth
+					.reserve(&producer.track().demand(), producer.bitrate()),
+			);
+			self.track = Some(Track::Encoding(producer));
 			return None;
 		}
 	}
@@ -628,7 +637,7 @@ impl<E: CatalogExt> Track<E> {
 		}
 	}
 
-	fn finish(self) -> Result<(), Error> {
+	fn finish(&mut self) -> Result<(), Error> {
 		match self {
 			Self::Reserved(reserved) => reserved.finish(),
 			Self::Encoding(producer) => producer.finish(),

@@ -15,8 +15,6 @@
 //! sets could not be decoded anyway, so the lenient reading only ever turns an
 //! error into a picture.
 
-use std::time::Duration;
-
 use bytes::Bytes;
 use hang::catalog::{AV1, VideoCodec, VideoConfig};
 use moq_mux::codec::{annexb, h264, h265};
@@ -47,7 +45,8 @@ pub enum Kind {
 /// A track keeps its groups for a while after they are read, so a decoder does
 /// not always open on an empty one: a player rebuilding its decoder subscribes
 /// while its predecessor still holds groups, and a rendition switched away from
-/// and back to stays warm for the track's idle linger. What to do with that
+/// and back to stays warm on the origin for the track's idle linger (cached
+/// groups, not an upstream subscription). What to do with that
 /// backlog depends on the consumer, and the two answers are opposites, so it is
 /// asked rather than guessed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,10 +76,12 @@ pub enum Start {
 pub struct Config {
 	/// Which backend to use.
 	pub kind: Kind,
-	/// Upper bound on buffering before a stalled group is skipped. `None` uses
-	/// the moq-mux default (skip aggressively); set it to your playout buffer for
-	/// a softer skip. Forwarded to the container consumer's `with_latency`.
-	pub latency_max: Option<Duration>,
+	/// How far playback may drift from the live edge before a stalled group is
+	/// skipped. Defaults to [`std::time::Duration::ZERO`](std::time::Duration::ZERO)
+	/// (skip aggressively); set [`max_age`](Self::max_age) to your
+	/// playout buffer for a softer skip. Applied to the initial transport
+	/// subscription and inherited by [`moq_mux::container::Consumer`].
+	pub max_age: std::time::Duration,
 	/// Where to start on a track that already holds groups.
 	pub start: Start,
 	/// Ask the decoder to emit frames at this size (both dimensions even) instead
@@ -109,7 +110,7 @@ pub struct Config {
 }
 
 impl Config {
-	/// A default config: automatic backend selection, default latency.
+	/// A default config: automatic backend selection, real-time latency.
 	pub fn new() -> Self {
 		Self::default()
 	}

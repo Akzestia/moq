@@ -42,4 +42,4 @@ Public API: additive. No existing product, target, or symbol changes.
 ## Required
 
 - [Measure](/quest/m2/slim-bindings/measure.md) - the go or no-go for the line
-- [FFI release workflow](/quest/m0/tooling/release-ffi.md) - the matrix doubles in one file, not five
+- [FFI release workflow](/quest/m2/tooling/release-ffi.md) - the matrix doubles in one file, not five

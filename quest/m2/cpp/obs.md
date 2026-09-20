@@ -45,4 +45,3 @@ unchanged: same settings, same dock, same reconnect and teardown timing.
 ## Related
 
 - [OBS native codecs](/quest/m2/obs-moq-video/README.md) - its quests require this migration and build on moq-ffi's audio and video types
-- [Track demand](/quest/m1/libmoq-track-demand.md) - stays on libmoq; OBS never adopted the signal

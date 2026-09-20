@@ -8,6 +8,10 @@
  * making all slashes implicit at boundaries.
  * All paths are RELATIVE; you cannot join with a leading slash to make an absolute path.
  *
+ * {@link Pattern} and {@link Patterns} are re-exported from `@moq/pattern`, the owner of
+ * the v1 grammar and algebra. Literal path construction and wire decoding retain
+ * their existing behavior.
+ *
  * @example
  * ```typescript
  * // Creation automatically trims slashes
@@ -311,3 +315,13 @@ export function relative(target: Valid, base: Valid): string | undefined {
 	// An empty reference resolves to the base itself, so name the parent explicitly.
 	return rel.length === 0 ? "." : rel.join("/");
 }
+
+/** Path patterns: grammar and algebra owned by `@moq/pattern`. */
+export {
+	compareSpecificity,
+	InvalidPattern,
+	Pattern,
+	Patterns,
+	type Segment,
+	type Specificity,
+} from "@moq/pattern";

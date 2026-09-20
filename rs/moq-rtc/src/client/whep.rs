@@ -18,12 +18,15 @@ use url::Url;
 use crate::{Error, Result, client::Client, ingest::IngestSink, session};
 
 pub(crate) async fn dial(client: &Client, url: Url, broadcast: moq_net::broadcast::Producer) -> Result<()> {
-	let sink = Box::new(IngestSink::new(broadcast)?);
+	let config = moq_mux::catalog::Config::default()
+		.with_max_age(client.config().max_age)
+		.with_bandwidth(client.config().bandwidth.clone());
+	let sink = Box::new(IngestSink::new(broadcast, config)?);
 
 	let (socket, candidates) = session::bind_udp(&client.config().ice_candidates).await?;
 	let mut rtc = Rtc::new(Instant::now());
 	for addr in &candidates {
-		let cand = Candidate::host(*addr, "udp").map_err(str0m::RtcError::from)?;
+		let cand = Candidate::host(*addr, "udp").map_err(Error::rtc)?;
 		rtc.add_local_candidate(cand);
 	}
 
@@ -58,7 +61,7 @@ pub(crate) async fn dial(client: &Client, url: Url, broadcast: moq_net::broadcas
 		.map_err(|err| Error::Other(anyhow::anyhow!("reading WHEP answer body: {err}")))?;
 	let answer = SdpAnswer::from_sdp_string(&body).map_err(|err| Error::InvalidSdp(err.to_string()))?;
 
-	rtc.sdp_api().accept_answer(pending, answer).map_err(Error::Rtc)?;
+	rtc.sdp_api().accept_answer(pending, answer).map_err(Error::rtc)?;
 	tracing::info!(%url, "whep client connected");
 
 	// 1:1 socket (no demux on the client): pump its datagrams into the session.

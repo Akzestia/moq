@@ -35,4 +35,4 @@ degree and adds a second, more specific route per carried broadcast.
 
 ## Related
 
-- [Perf](/quest/m1/perf/README.md) - the hot-path work that owns the remaining per-cell cost
+- [Perf](/quest/m2/perf/README.md) - the hot-path work that owns the remaining per-cell cost

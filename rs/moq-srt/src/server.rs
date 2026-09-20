@@ -14,7 +14,7 @@
 //!   [`Subscribe::reject`]. This is the egress path: a player (VLC, ffmpeg) pulls
 //!   `srt://host:port?streamid=#!::r=<broadcast>,m=request`.
 //!
-//! This mirrors `moq-native`'s `Server` / `Request`, so the gateway stays
+//! This mirrors `moq-tokio`'s `Server` / `Request`, so the gateway stays
 //! unopinionated about auth: the embedder (e.g. a relay verifying the stream id
 //! as a JWT) owns that policy. For the unauthenticated convenience that accepts
 //! everything and routes by prefix, use [`crate::run`].
@@ -205,6 +205,8 @@ impl Server {
 				stream_id,
 				peer,
 				latency: self.latency,
+				max_age: None,
+				bandwidth: moq_net::bandwidth::Allocator::unlimited(),
 			};
 
 			// `m=request` reads a broadcast out; everything else publishes one in.
@@ -231,6 +233,12 @@ struct Pending {
 	peer: SocketAddr,
 	/// The SRT receive latency, reused as the egress skip threshold on a subscribe.
 	latency: Duration,
+	/// Retention declared on the media tracks an ingest mints, or `None` for hang's own
+	/// default. Override with [`Publish::with_max_age`].
+	max_age: Option<Duration>,
+	/// Connection allocator each ingested track claims its peak-hold bitrate on.
+	/// Override with [`Publish::with_bandwidth`].
+	bandwidth: moq_net::bandwidth::Allocator,
 }
 
 /// What an accepted SRT connection wants: to contribute media ([`Publish`]) or to
@@ -303,6 +311,32 @@ impl Publish {
 		self.0.peer
 	}
 
+	/// Set how long relays keep a non-latest group of this publish's media tracks
+	/// fetchable. `None` keeps hang's own default.
+	///
+	/// A retention budget, not a delivery one: it never makes a subscriber play further
+	/// behind live, it caps how far back a FETCH can still reach. The default suits a
+	/// segmented egress (HLS/DASH) reading the broadcast downstream, which may only
+	/// advertise segments that are still fetchable. Lower it when nothing reads history
+	/// and the memory matters.
+	///
+	/// Unrelated to the SRT receive latency [`Server::bind`] negotiates, which is a
+	/// transport buffer on this hop.
+	pub fn with_max_age(mut self, max_age: impl Into<Option<Duration>>) -> Self {
+		self.0.max_age = max_age.into();
+		self
+	}
+
+	/// Claim each ingested track's peak-hold catalog bitrate on `bandwidth`.
+	///
+	/// A passthrough import has no configured ceiling, so it reserves the measured
+	/// maximum instead. A co-resident encoder then targets what is left of the
+	/// uplink. Unlimited (the default) claims nothing a sender can follow.
+	pub fn with_bandwidth(mut self, bandwidth: moq_net::bandwidth::Allocator) -> Self {
+		self.0.bandwidth = bandwidth;
+		self
+	}
+
 	/// Accept the publish: announce a broadcast at `path` in `origin` and pump the
 	/// connection's MPEG-TS into it until the client disconnects.
 	///
@@ -314,7 +348,10 @@ impl Publish {
 		let path = path.as_path();
 		let socket = self.0.request.accept(None).await?;
 		tracing::info!(peer = %self.0.peer, %path, "SRT publish accepted");
-		serve_publish(origin, path.as_str(), socket).await
+		let config = moq_mux::catalog::Config::default()
+			.with_max_age(self.0.max_age)
+			.with_bandwidth(self.0.bandwidth);
+		serve_publish(origin, path.as_str(), socket, config).await
 	}
 
 	/// Reject the publish, sending the client a `Forbidden` rejection.
@@ -387,10 +424,15 @@ async fn reject_log(request: ConnectionRequest, reason: ServerRejectReason, peer
 }
 
 /// Pump one accepted SRT socket's MPEG-TS payload into the origin (`m=publish`).
-pub(crate) async fn serve_publish(origin: &origin::Producer, path: &str, mut socket: SrtSocket) -> Result<()> {
+pub(crate) async fn serve_publish(
+	origin: &origin::Producer,
+	path: &str,
+	mut socket: SrtSocket,
+	config: moq_mux::catalog::Config,
+) -> Result<()> {
 	use futures::TryStreamExt;
 
-	let mut publisher = crate::ts::Publisher::new(origin, path)?;
+	let mut publisher = crate::ts::Publisher::new(origin, path, config)?;
 
 	// Run the read/feed loop so an error surfaces here instead of unwinding past
 	// the publisher, which would drop it (and its tracks) with a bare Error::Dropped.
@@ -423,7 +465,7 @@ pub(crate) async fn serve_subscribe(
 	mut socket: SrtSocket,
 	latency: Duration,
 ) -> Result<()> {
-	// Resolve the broadcast, but watch the socket while we wait: `announced_broadcast`
+	// Resolve the broadcast, but watch the socket while we wait: `routed`
 	// parks forever for a stream that is never published, and nothing else polls the
 	// socket during that wait, so without this a caller who requests a non-existent
 	// stream (or hangs up before it starts) would leak this task and its socket.
@@ -755,9 +797,9 @@ mod tests {
 		assert_eq!(chunks[1].0, start + 2 * SLOT, "the new generation is the live edge");
 	}
 
-	/// End to end over a real SRT receiver: a publisher that rewinds ten minutes must
-	/// keep the program flowing, with the new generation stamped at the wall clock it
-	/// was muxed at rather than back at the connection's first packet.
+	/// End to end over a real SRT receiver: a publisher that declares a marker after
+	/// ten minutes must keep the program flowing, with the new generation stamped at
+	/// the wall clock it was muxed at rather than back at the connection's first packet.
 	///
 	/// The receiver's TSBPD releases each message at the origin instant the sender
 	/// stamped, so what it observes is exactly the pacing decision under test: with a
@@ -765,7 +807,7 @@ mod tests {
 	/// already a latency in the past by the time it is sent, so it is released at once
 	/// (or dropped as too late) instead of on the media clock.
 	#[tokio::test]
-	async fn a_publisher_rewind_keeps_an_srt_receiver_playing() {
+	async fn a_publisher_marker_keeps_an_srt_receiver_playing() {
 		use moq_mux::catalog::hang::Container as MuxContainer;
 		use moq_mux::container::{Producer, ts};
 		use moq_net::Timestamp;
@@ -776,28 +818,31 @@ mod tests {
 		// Ten minutes in, the span from the controlled-rewind evidence on #2833.
 		const OFFSET: u64 = 600_000_000;
 
-		let origin = moq_net::Origin::random().produce();
-		let mut broadcast = origin
-			.create_broadcast("rewind", moq_net::broadcast::Route::new().with_announce(true))
-			.unwrap();
+		let (origin, driver) = moq_net::origin::Producer::new(moq_net::Hop::random().into());
+		tokio::spawn(driver.run(moq_tokio::runtime::Runtime::<()>::new()));
+		let mut broadcast = origin.create_broadcast("rewind").unwrap();
+		broadcast.announce(moq_net::origin::Route::default()).unwrap();
 		let mut catalog = moq_mux::catalog::Producer::with_catalog(
 			&mut broadcast,
 			moq_mux::catalog::hang::Catalog::<ts::Ext>::default(),
 		)
 		.unwrap();
 		let track = broadcast
-			.create_track(broadcast.unique_name(".aac"), hang::container::track_info())
+			.create_track(
+				broadcast.unique_name(".aac"),
+				hang::container::track_info(hang::catalog::PRIORITY.audio),
+			)
 			.unwrap();
 		{
-			let mut guard = catalog.lock();
+			let mut guard = catalog.modify().unwrap();
 			let mut config = hang::catalog::AudioConfig::new(hang::catalog::AAC { profile: 2 }, 48_000, 2);
 			config.container = hang::catalog::Container::Legacy;
 			guard.audio.renditions.insert(track.name().to_string(), config);
 		}
-		let mut producer = Producer::new(track, MuxContainer::Legacy);
+		let mut producer = Producer::new(track, MuxContainer::Legacy(moq_mux::container::Kind::Audio));
 
 		// 100ms audio frames in one-second groups.
-		let mut write = |count: u64, offset: u64| {
+		fn write(producer: &mut Producer<MuxContainer>, count: u64, offset: u64) {
 			for i in 0..count {
 				producer
 					.write(Frame {
@@ -811,7 +856,7 @@ mod tests {
 					producer.cut(None).unwrap();
 				}
 			}
-		};
+		}
 
 		let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
 		let addr: SocketAddr = probe.local_addr().unwrap();
@@ -833,8 +878,8 @@ mod tests {
 		let mut receiver = caller.await.unwrap();
 
 		// Three seconds of program, then wait until the receiver is actually playing it
-		// so the rewind lands a real wall-clock distance after the first packet.
-		write(30, OFFSET);
+		// so the marker lands a real wall-clock distance after the first packet.
+		write(&mut producer, 30, OFFSET);
 		let mut received = Vec::new();
 		let first = tokio::time::timeout(Duration::from_secs(10), receiver.next())
 			.await
@@ -843,16 +888,17 @@ mod tests {
 			.unwrap();
 		received.push(first);
 
-		// The publisher restarts at the top of its source.
-		write(30, 0);
+		// The publisher declares a break and continues forward.
+		producer.discontinuity().unwrap();
+		write(&mut producer, 30, OFFSET + 3_000_000);
 
 		// Drain until the muxer flags the break, which it does exactly once, on the new
 		// generation's leading clock packet.
 		let boundary = loop {
 			let payload = tokio::time::timeout(Duration::from_secs(10), receiver.next())
 				.await
-				.expect("the rewound generation never arrived")
-				.expect("the SRT egress closed before the rewind")
+				.expect("the resumed generation never arrived")
+				.expect("the SRT egress closed before the marker")
 				.unwrap();
 			received.push(payload);
 			if let Some(index) = received.iter().position(|(_, payload)| flags_a_break(payload)) {
@@ -863,7 +909,7 @@ mod tests {
 		assert!(boundary > 0, "the break cannot be in the connection's first payload");
 		assert!(
 			received[boundary].0 > received[0].0 + Duration::from_millis(100),
-			"the rewound generation must be stamped at the wall clock it was muxed at, \
+			"the new generation must be stamped at the wall clock it was muxed at, \
 			 not back at the first packet ({:?} after it)",
 			received[boundary].0.saturating_duration_since(received[0].0),
 		);

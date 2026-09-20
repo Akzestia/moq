@@ -18,7 +18,7 @@ pub(crate) struct Resolved {
 	pub height: u32,
 	/// The output resolution, derived from the source aspect ratio.
 	pub size: moq_video::Size,
-	pub bitrate: u64,
+	pub bitrate: moq_net::bandwidth::Rate,
 	pub framerate: u32,
 }
 
@@ -163,7 +163,7 @@ pub(crate) fn resolve_rungs(ladder: &Ladder, source_name: &str, source: &VideoCo
 		if height == source_height && source.bitrate.is_none() {
 			continue;
 		}
-		if source.bitrate.is_some_and(|bitrate| rung.bitrate >= bitrate) {
+		if source.bitrate.is_some_and(|bitrate| rung.bitrate.as_bps() >= bitrate) {
 			continue;
 		}
 		// Preserve the source aspect ratio, rounded to even for I420 chroma.
@@ -205,6 +205,13 @@ pub(crate) async fn rung_entry(
 	Ok(entry)
 }
 
+/// Rungs inherit the state of the rendition the pipeline actually decodes.
+pub(crate) fn inherit_stalled(rungs: &mut [Published], source: &VideoConfig) {
+	for published in rungs {
+		published.entry.stalled = source.stalled;
+	}
+}
+
 /// Fill the derivative catalog: rung entries plus, when `source_rel` is set,
 /// every source rendition referenced through it (so players fetch those tracks
 /// from the source broadcast directly). Called again on each source catalog
@@ -217,6 +224,12 @@ pub(crate) fn populate(
 ) -> Result<(), Error> {
 	out.video = Video::default();
 	out.audio = hang::catalog::Audio::default();
+	// A derivative does not synthesize its own archive: keep the child's, including a
+	// live-only timeline, so replay/store discovery survives composition. The clock goes with
+	// it: the derivative republishes the child's timeline, so its timestamps only mean
+	// something under the child's wall mapping.
+	out.archive = source.archive.clone();
+	out.clock = source.clock;
 
 	// Display metadata applies to the rungs too (same picture, smaller).
 	out.video.display = source.video.display.clone();
@@ -280,6 +293,40 @@ mod tests {
 	}
 
 	#[test]
+	fn rungs_inherit_a_stalled_source() {
+		let mut source_catalog = moq_mux::catalog::hang::Catalog::default();
+		let mut src = source(1280, 720, Some(2_500_000));
+		src.stalled = Some(true);
+		source_catalog.video.insert("video", src).unwrap();
+
+		let mut published = [Published {
+			rung: Resolved {
+				name: "video/360p".into(),
+				height: 360,
+				size: moq_video::Size::new(640, 360),
+				bitrate: moq_net::bandwidth::Rate::from_bps(600_000),
+				framerate: 30,
+			},
+			entry: source(640, 360, Some(600_000)),
+		}];
+
+		inherit_stalled(&mut published, &source_catalog.video.renditions["video"]);
+		let mut out = moq_mux::catalog::hang::Catalog::default();
+		populate(&mut out, &source_catalog, &published, None).unwrap();
+		assert_eq!(
+			out.video.renditions.get("video/360p").and_then(|c| c.stalled),
+			Some(true)
+		);
+
+		// A different local rendition may stay stalled after the selected input recovers.
+		let healthy = source(1920, 1080, Some(5_000_000));
+		source_catalog.video.insert("healthy", healthy.clone()).unwrap();
+		inherit_stalled(&mut published, &healthy);
+		populate(&mut out, &source_catalog, &published, None).unwrap();
+		assert_eq!(out.video.renditions["video/360p"].stalled, None);
+	}
+
+	#[test]
 	fn rungs_never_upscale() {
 		let rungs = crate::Config::default().ladder;
 		let resolved = resolve_rungs(&rungs, "video", &source(854, 480, Some(2_000_000))).unwrap();
@@ -292,10 +339,10 @@ mod tests {
 	#[test]
 	fn filtering_preserves_order_across_source_changes() {
 		let ladder = Ladder::new([
-			Rung::new(720, 2_500_000),
-			Rung::new(241, 350_000),
-			Rung::new(480, 1_200_000),
-			Rung::new(360, 600_000),
+			Rung::new(720, moq_net::bandwidth::Rate::from_bps(2_500_000)),
+			Rung::new(241, moq_net::bandwidth::Rate::from_bps(350_000)),
+			Rung::new(480, moq_net::bandwidth::Rate::from_bps(1_200_000)),
+			Rung::new(360, moq_net::bandwidth::Rate::from_bps(600_000)),
 		])
 		.unwrap();
 		for (picture, expected) in [
@@ -312,7 +359,7 @@ mod tests {
 
 	#[test]
 	fn same_height_needs_lower_bitrate() {
-		let rungs = Ladder::new([Rung::new(480, 1_200_000)]).unwrap();
+		let rungs = Ladder::new([Rung::new(480, moq_net::bandwidth::Rate::from_bps(1_200_000))]).unwrap();
 		// Unknown source bitrate: a same-height rung can't prove it's below.
 		assert!(
 			resolve_rungs(&rungs, "video", &source(854, 480, None))
@@ -330,7 +377,7 @@ mod tests {
 	#[test]
 	fn rung_geometry_follows_source_aspect() {
 		let resolved = resolve_rungs(
-			&Ladder::new([Rung::new(360, 600_000)]).unwrap(),
+			&Ladder::new([Rung::new(360, moq_net::bandwidth::Rate::from_bps(600_000))]).unwrap(),
 			"video",
 			&source(1920, 1080, Some(6_000_000)),
 		)
@@ -340,7 +387,7 @@ mod tests {
 
 		// Vertical video: aspect preserved, width rounded to even.
 		let resolved = resolve_rungs(
-			&Ladder::new([Rung::new(360, 600_000)]).unwrap(),
+			&Ladder::new([Rung::new(360, moq_net::bandwidth::Rate::from_bps(600_000))]).unwrap(),
 			"video",
 			&source(1080, 1920, Some(6_000_000)),
 		)
@@ -375,7 +422,11 @@ mod tests {
 		config.coded_width = None;
 		config.coded_height = None;
 		assert!(matches!(
-			resolve_rungs(&Ladder::new([Rung::new(360, 600_000)]).unwrap(), "video", &config),
+			resolve_rungs(
+				&Ladder::new([Rung::new(360, moq_net::bandwidth::Rate::from_bps(600_000))]).unwrap(),
+				"video",
+				&config
+			),
 			Err(Error::SourceDimensions(_))
 		));
 	}
@@ -406,7 +457,7 @@ mod tests {
 			name: "video/360p".to_string(),
 			height: 360,
 			size: moq_video::Size::new(640, 360),
-			bitrate: 600_000,
+			bitrate: moq_net::bandwidth::Rate::from_bps(600_000),
 			framerate: 30,
 		};
 		let mut source = source(1920, 1080, Some(6_000_000));
@@ -487,5 +538,25 @@ mod tests {
 		let (name, config) = choose_source(&video).unwrap();
 		assert_eq!(name, "h264");
 		assert!(matches!(config.codec, VideoCodec::H264(_)));
+	}
+
+	#[test]
+	fn populate_preserves_the_child_archive() {
+		let mut child = moq_mux::catalog::hang::Catalog::<()>::default();
+		child
+			.video
+			.insert("video", source(1920, 1080, Some(6_000_000)))
+			.unwrap();
+		let mut archive = hang::catalog::Archive::new("timeline.z");
+		archive.replay = Some(PathRelativeOwned::from("./recordings/clip".to_string()));
+		archive.version = Some(hang::catalog::Archive::VERSION);
+		child.archive = Some(archive.clone());
+		let clock = hang::catalog::Clock::new(1_751_846_400_000_000).unwrap();
+		child.clock = Some(clock);
+
+		let mut out = moq_mux::catalog::hang::Catalog::<()>::default();
+		populate(&mut out, &child, &[], None).unwrap();
+		assert_eq!(out.archive, Some(archive), "a derivative keeps the child's archive");
+		assert_eq!(out.clock, Some(clock), "a derivative keeps the child's clock");
 	}
 }

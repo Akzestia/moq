@@ -1,4 +1,4 @@
-# Accept crane as argument to the overlay
+# Accept crane as argument to the overlay.
 { crane }:
 final: prev:
 let
@@ -84,17 +84,15 @@ let
     # jemalloc's configure uses -O0 test builds, which conflict with
     # Nix's _FORTIFY_SOURCE hardening (requires -O).
     hardeningDisable = [ "fortify" ];
+    # `cluster_connect_api_http_attaches_client_tls` builds the connect TLS
+    # config the way the relay's Auth does, which loads native roots and errors
+    # when none are found. Same fix as moq-relay: point rustls-native-certs at
+    # cacert's bundle for the check phase.
+    nativeBuildInputs = [ final.cacert ];
+    SSL_CERT_FILE = "${final.cacert}/etc/ssl/certs/ca-bundle.crt";
     # The crate is `moq-cli`, but its `[[bin]]` ships as `moq`.
     meta.mainProgram = "moq";
   };
-
-  moqTokenCliArgs = crateInfo ../rs/moq-token-cli/Cargo.toml // {
-    src = cleanCargoSource;
-    cargoExtraArgs = "-p moq-token-cli";
-    # The crate is `moq-token-cli`, but its `[[bin]]` ships as `moq-token`.
-    meta.mainProgram = "moq-token";
-  };
-  moqTokenPackage = buildPackage moqTokenCliArgs;
 
   moqBenchArgs = crateInfo ../rs/moq-bench/Cargo.toml // {
     src = cleanCargoSource;
@@ -297,9 +295,6 @@ in
   moq-cli = buildPackage moqCliArgs;
 
   moq-bench = buildPackage moqBenchArgs;
-
-  moq-token = moqTokenPackage;
-  moq-token-cli = moqTokenPackage;
 
   moq-boy = buildPackage (
     crateInfo ../rs/moq-boy/Cargo.toml

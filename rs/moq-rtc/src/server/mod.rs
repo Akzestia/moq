@@ -14,6 +14,7 @@ mod mux;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -62,7 +63,7 @@ struct AcceptedSession {
 	cancel: Option<oneshot::Receiver<()>>,
 	role: &'static str,
 	// WHIP only: a clone of the ingest broadcast, so a deliberate DELETE can
-	// finish() it (prompt unannounce) instead of lingering for a reconnect.
+	// finish() it: a clean end instead of an abort error.
 	broadcast: Option<moq_net::broadcast::Producer>,
 }
 
@@ -88,7 +89,7 @@ impl AcceptedSession {
 					tracing::debug!(role = self.role, "webrtc session terminated by DELETE");
 					// A deliberate end: finish the broadcast so the origin
 					// unannounces it immediately.
-					if let Some(mut broadcast) = self.broadcast.take() {
+					if let Some(broadcast) = self.broadcast.take() {
 						broadcast.finish();
 					}
 					Ok(())
@@ -145,6 +146,22 @@ pub struct Config {
 	/// exactly one media port in its firewall. `0.0.0.0:0` (the default) lets
 	/// the OS pick a port, which is fine for dev/loopback; production pins it.
 	pub udp_bind: SocketAddr,
+
+	/// How long relays keep a non-latest group of an ingested media track fetchable.
+	///
+	/// A retention budget, not a delivery one: it never makes a subscriber play further
+	/// behind live, it caps how far back a FETCH can still reach. `None` keeps hang's own
+	/// default, which suits a segmented egress (HLS/DASH) reading the broadcast downstream:
+	/// it may only advertise segments that are still fetchable. Lower it when nothing reads
+	/// history and the memory matters.
+	///
+	/// Ingest only (`server publish` / WHIP): WHEP egress reads a broadcast someone else
+	/// declared, so it ignores this.
+	pub max_age: Option<Duration>,
+
+	/// Connection allocator each ingested track claims its peak-hold bitrate on.
+	/// Ingest only (`server publish` / WHIP); WHEP egress ignores this.
+	pub bandwidth: moq_net::bandwidth::Allocator,
 }
 
 impl Default for Config {
@@ -152,6 +169,8 @@ impl Default for Config {
 		Self {
 			ice_candidates: Vec::new(),
 			udp_bind: SocketAddr::from(([0, 0, 0, 0], 0)),
+			max_age: None,
+			bandwidth: moq_net::bandwidth::Allocator::unlimited(),
 		}
 	}
 }
@@ -225,6 +244,10 @@ impl Server {
 		whep::router(self.clone())
 	}
 
+	pub(crate) fn config(&self) -> &Config {
+		&self.inner.config
+	}
+
 	pub(crate) fn publisher(&self) -> &moq_net::origin::Producer {
 		&self.inner.publisher
 	}
@@ -275,11 +298,24 @@ pub(crate) async fn delete(State(server): State<Server>, Path(path): Path<String
 
 #[cfg(test)]
 mod tests {
+	/// Build an origin producer, spawning its driver on the ambient runtime.
+	fn produce_origin() -> moq_net::origin::Producer {
+		let (producer, driver) = moq_net::origin::Producer::new(moq_net::Hop::random().into());
+		if tokio::runtime::Handle::try_current().is_ok() {
+			tokio::spawn(driver.run(moq_tokio::runtime::Runtime::<()>::new()));
+		} else {
+			// A sync test: nothing polls the driver, and dropping it would tear
+			// the origin down, so leak it and rely on the synchronous half.
+			std::mem::forget(driver);
+		}
+		producer
+	}
+
 	use super::*;
 
 	fn server() -> Server {
-		let publisher = moq_net::Origin::random().produce();
-		let subscriber = moq_net::Origin::random().produce().consume();
+		let publisher = produce_origin();
+		let subscriber = produce_origin().consume();
 		Server::new(Config::default(), publisher, subscriber)
 	}
 

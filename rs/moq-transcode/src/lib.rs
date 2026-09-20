@@ -34,8 +34,6 @@ mod rung;
 pub use config::Config;
 pub use ladder::{Ladder, Rung};
 
-#[allow(deprecated)]
-pub use config::source_reference;
 pub use error::Error;
 
 /// Transcode `source` into `output` until the source broadcast ends.
@@ -109,7 +107,7 @@ impl Transcoder {
 	pub async fn run(self) -> Result<(), Error> {
 		let Self {
 			source,
-			mut output,
+			output,
 			config,
 			mut derived,
 			mut dynamic,
@@ -139,10 +137,12 @@ impl Transcoder {
 			pipeline::Pipeline::new(source.clone(), config.clone(), active, source_name, source_config).await?;
 
 		// Publish the derivative catalog before any encoder exists, so subscribers
-		// can pick a rung immediately.
+		// can pick a rung immediately. Commit so a catalog that cannot be published fails
+		// here rather than serving rungs nobody can discover.
 		{
-			let mut guard = derived.lock();
+			let mut guard = derived.modify()?;
 			catalog::populate(&mut guard, &snapshot, ladder.rungs(), config.source.as_ref())?;
+			guard.commit()?;
 		}
 
 		// Serve rung requests and follow source catalog updates until the source ends.
@@ -160,8 +160,9 @@ impl Transcoder {
 				update = catalogs.next() => match update {
 					Ok(Some(snapshot)) => {
 						ladder.follow(&snapshot.video).await?;
-						let mut guard = derived.lock();
+						let mut guard = derived.modify()?;
 						catalog::populate(&mut guard, &snapshot, ladder.rungs(), config.source.as_ref())?;
+						guard.commit()?;
 					}
 					// The source ended (or its catalog track died): wind down.
 					Ok(None) => break,
@@ -237,7 +238,7 @@ mod tests {
 			video.description = description;
 			self.size = (width, height);
 
-			let mut guard = self.catalog.lock();
+			let mut guard = self.catalog.modify().unwrap();
 			guard.video = hang::catalog::Video::default();
 			guard.video.insert("video", video).unwrap();
 		}
@@ -248,7 +249,9 @@ mod tests {
 	fn source_catalog(width: u32, height: u32) -> Source {
 		let mut broadcast = moq_net::broadcast::Info::default().produce();
 		let catalog = moq_mux::catalog::Producer::new(&mut broadcast).unwrap();
-		let track = broadcast.create_track("video", hang::container::track_info()).unwrap();
+		let track = broadcast
+			.create_track("video", hang::container::track_info(hang::catalog::PRIORITY.video))
+			.unwrap();
 
 		let mut source = Source {
 			broadcast,
@@ -345,10 +348,10 @@ mod tests {
 		video.coded_height = Some(240);
 		video.bitrate = Some(1_000_000);
 		video.framerate = Some(30.0);
-		catalog.lock().video.insert("video", video).unwrap();
+		catalog.modify().unwrap().video.insert("video", video).unwrap();
 
-		let info = hang::container::track_info();
-		let mut track = broadcast.create_track("video", info).unwrap();
+		let info = hang::container::track_info(hang::catalog::PRIORITY.video);
+		let track = broadcast.create_track("video", info).unwrap();
 
 		let mut encoder = moq_video::encode::Encoder::new(&{
 			let mut config = moq_video::encode::Config::new(320, 240, 30);
@@ -402,10 +405,10 @@ mod tests {
 		video.coded_height = Some(240);
 		video.bitrate = Some(1_000_000);
 		video.framerate = Some(30.0);
-		catalog.lock().video.insert("video", video).unwrap();
+		catalog.modify().unwrap().video.insert("video", video).unwrap();
 
-		let info = hang::container::track_info();
-		let mut track = broadcast.create_track("video", info).unwrap();
+		let info = hang::container::track_info(hang::catalog::PRIORITY.video);
+		let track = broadcast.create_track("video", info).unwrap();
 
 		let source = Source {
 			broadcast,
@@ -465,7 +468,11 @@ mod tests {
 		// source against the encoders the way a live source does.
 		let (source, producer_task) = source_broadcast_live(3, 5);
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000), Rung::new(60, 50_000)]).unwrap(),
+			ladder: Ladder::new([
+				Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000)),
+				Rung::new(60, moq_net::bandwidth::Rate::from_bps(50_000)),
+			])
+			.unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Software,
 			source: None,
@@ -487,7 +494,7 @@ mod tests {
 					Err(err) => panic!("rung track {name}: {err}"),
 				}
 			};
-			subscribers.push((name, track.subscribe(None).await.unwrap()));
+			subscribers.push((name, track.subscribe(None).await.unwrap().ordered()));
 		}
 
 		// Every rung receives a complete group with all 5 source frames.
@@ -531,7 +538,11 @@ mod tests {
 		// encode resolution), so the hardware ladder stays a bit larger than the
 		// software test's.
 		let mut config = Config {
-			ladder: Ladder::new([Rung::new(180, 200_000), Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([
+				Rung::new(180, moq_net::bandwidth::Rate::from_bps(200_000)),
+				Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000)),
+			])
+			.unwrap(),
 			encoder: moq_video::encode::Kind::Hardware,
 			decoder: moq_video::decode::Kind::Hardware,
 			source: None,
@@ -552,7 +563,7 @@ mod tests {
 					Err(err) => panic!("rung track {name}: {err}"),
 				}
 			};
-			subscribers.push((name, track.subscribe(None).await.unwrap()));
+			subscribers.push((name, track.subscribe(None).await.unwrap().ordered()));
 		}
 
 		for (name, subscriber) in &mut subscribers {
@@ -612,7 +623,7 @@ mod tests {
 	async fn vaapi_fetch_keeps_the_buffered_tail() {
 		let source = source_broadcast(1, 5);
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Named("vaapi".to_string()),
 			source: None,
@@ -657,7 +668,7 @@ mod tests {
 
 		let (source, producer_task) = source_broadcast_live(1, 5);
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Named("vaapi".to_string()),
 			source: None,
@@ -676,7 +687,7 @@ mod tests {
 			}
 		};
 		let mut subscriber = track.subscribe(None).await.unwrap();
-		let mut group = subscriber.next_group().await.unwrap().unwrap();
+		let mut group = subscriber.recv_group().await.unwrap().unwrap();
 		while group.read_frame().await.unwrap().is_some() {}
 		assert_eq!(
 			group.frame_count(),
@@ -705,7 +716,7 @@ mod tests {
 
 		let source = source_broadcast(2, 5);
 		let mut config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Hardware,
 			decoder: moq_video::decode::Kind::Hardware,
 			source: None,
@@ -744,14 +755,18 @@ mod tests {
 		let source = source_broadcast(2, 5);
 
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Software,
 			source: Some(moq_net::PathRelativeOwned::from(".".to_string())),
 			..Default::default()
 		};
 
-		let output = moq_net::broadcast::Info::default().produce();
+		// The passthrough reference (`..`) resolves against the output broadcast's path, so
+		// the output must be minted through an origin: a standalone producer has no path, and
+		// `..` from it would escape, failing the catalog read below.
+		let origin = moq_tokio::origin::spawn(moq_net::Hop::random());
+		let output = origin.create_broadcast("room/transcode").unwrap();
 		let consumer = output.consume();
 		let transcoder = tokio::spawn(run(source.broadcast.consume(), output, config));
 
@@ -788,7 +803,13 @@ mod tests {
 
 		// Subscribing to the rung starts the live loop, which mirrors source
 		// group sequences 1:1.
-		let mut subscriber = consumer.track("video/120p").unwrap().subscribe(None).await.unwrap();
+		let mut subscriber = consumer
+			.track("video/120p")
+			.unwrap()
+			.subscribe(None)
+			.await
+			.unwrap()
+			.ordered();
 		let mut group = subscriber.next_group().await.unwrap().unwrap();
 		assert!(group.sequence <= 1, "unexpected sequence {}", group.sequence);
 		let payload = group.read_frame().await.unwrap().unwrap();
@@ -844,7 +865,7 @@ mod tests {
 		let source = source_broadcast(2, 5);
 
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Software,
 			source: None,
@@ -862,11 +883,17 @@ mod tests {
 		let rendition = update.rendition;
 		assert_eq!(rendition.name(), "video/120p");
 		assert_eq!(rendition.size().height, 120);
-		assert_eq!(rendition.bitrate(), 100_000);
+		assert_eq!(rendition.bitrate(), moq_net::bandwidth::Rate::from_bps(100_000));
 		assert!(!update.encoding, "encoding before anyone asked");
 		assert_eq!(rendition.frames(), 0);
 
-		let mut subscriber = consumer.track("video/120p").unwrap().subscribe(None).await.unwrap();
+		let mut subscriber = consumer
+			.track("video/120p")
+			.unwrap()
+			.subscribe(None)
+			.await
+			.unwrap()
+			.ordered();
 		let update = active.next().await.unwrap();
 		assert_eq!(update.rendition.name(), "video/120p");
 		assert!(update.encoding);
@@ -906,7 +933,7 @@ mod tests {
 		let mut source = source_catalog(640, 360);
 
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Software,
 			source: None,
@@ -954,7 +981,7 @@ mod tests {
 
 		// The retired name ends cleanly, and the replacement is a track the
 		// transcoder has never finished, so it serves.
-		let ended = tokio::time::timeout(std::time::Duration::from_secs(5), retired.next_group())
+		let ended = tokio::time::timeout(std::time::Duration::from_secs(5), retired.recv_group())
 			.await
 			.expect("the retired rung never ended its track")
 			.expect("the retired rung aborted instead of finishing");
@@ -978,9 +1005,9 @@ mod tests {
 			// 360p is admitted at 640x360 only because its bitrate undercuts the
 			// source's; 240p and 120p fit outright.
 			ladder: Ladder::new([
-				Rung::new(360, 900_000),
-				Rung::new(240, 300_000),
-				Rung::new(120, 100_000),
+				Rung::new(360, moq_net::bandwidth::Rate::from_bps(900_000)),
+				Rung::new(240, moq_net::bandwidth::Rate::from_bps(300_000)),
+				Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000)),
 			])
 			.unwrap(),
 			encoder: moq_video::encode::Kind::Software,
@@ -1047,7 +1074,7 @@ mod tests {
 		// The retired rung ends its track, so a subscriber reselects the way it
 		// would on any other rendition going away, rather than stalling or seeing
 		// an abort it would read as a failure.
-		let ended = tokio::time::timeout(std::time::Duration::from_secs(5), retired.next_group())
+		let ended = tokio::time::timeout(std::time::Duration::from_secs(5), retired.recv_group())
 			.await
 			.expect("the retired rung never ended its track")
 			.expect("the retired rung aborted instead of finishing");
@@ -1056,7 +1083,7 @@ mod tests {
 		// The rung the new picture still fits keeps serving: its subscriber sees
 		// nothing at all, since the source has no media.
 		assert!(
-			tokio::time::timeout(std::time::Duration::from_millis(100), kept.next_group())
+			tokio::time::timeout(std::time::Duration::from_millis(100), kept.recv_group())
 				.await
 				.is_err(),
 			"a rung that still fits was retired anyway"
@@ -1083,7 +1110,7 @@ mod tests {
 		write_keyframe(&mut group);
 
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Software,
 			source: None,
@@ -1110,7 +1137,7 @@ mod tests {
 		// wait until the live path has claimed group 0, so the fetch below can only
 		// resolve from the track cache and retirement finds that live group open.
 		let rung = consumer.track("video/120p").unwrap();
-		rung.info().await.unwrap();
+		rung.query().await.unwrap();
 		while rung.latest() != Some(0) {
 			tokio::task::yield_now().await;
 		}
@@ -1161,7 +1188,7 @@ mod tests {
 		let source_fetches = source._track.dynamic();
 
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Software,
 			source: None,
@@ -1187,7 +1214,7 @@ mod tests {
 		// Resolving the info waits for the transcoder to accept the track, so the
 		// fetch below reaches a rung that is already serving.
 		let rung = consumer.track("video/120p").unwrap();
-		rung.info().await.unwrap();
+		rung.query().await.unwrap();
 		assert!(
 			source._track.subscription_changed().await.unwrap().is_some(),
 			"the rung never subscribed to the live source",
@@ -1243,7 +1270,7 @@ mod tests {
 		let mut source = source_catalog(320, 240);
 
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Software,
 			source: None,
@@ -1290,7 +1317,7 @@ mod tests {
 			"the replacement should serve the same picture under a new name"
 		);
 
-		let ended = tokio::time::timeout(std::time::Duration::from_secs(5), retired.next_group())
+		let ended = tokio::time::timeout(std::time::Duration::from_secs(5), retired.recv_group())
 			.await
 			.expect("the retired rung never ended its track")
 			.expect("the retired rung aborted instead of finishing");
@@ -1307,7 +1334,7 @@ mod tests {
 		let source = source_broadcast(1, 3);
 
 		let config = Config {
-			ladder: Ladder::new([Rung::new(120, 100_000)]).unwrap(),
+			ladder: Ladder::new([Rung::new(120, moq_net::bandwidth::Rate::from_bps(100_000))]).unwrap(),
 			encoder: moq_video::encode::Kind::Software,
 			decoder: moq_video::decode::Kind::Software,
 			source: None,

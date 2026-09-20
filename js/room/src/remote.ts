@@ -5,12 +5,10 @@
  */
 
 import type * as Moq from "@moq/net";
-import { Effect, type Getter, type GetterInit, getter, type Readonlys, readonlys, Signal } from "@moq/signals";
+import { Effect, type Getter, type Readonlys, readonlys, Signal } from "@moq/signals";
 import * as Watch from "@moq/watch";
 import { consume, type Preview, type UserInput } from "./metadata.ts";
 import { KIND, type Kind } from "./path.ts";
-
-type Established = Moq.Connection.Established;
 
 /** One watched broadcast (camera or screen) for a remote participant. */
 export class Member {
@@ -47,12 +45,12 @@ export class Member {
 	#metadata: ReturnType<typeof consume>;
 	#signals = new Effect();
 
-	constructor(kind: Kind, path: Moq.Path.Valid, connection: Getter<Established | undefined>) {
+	constructor(kind: Kind, path: Moq.Path.Valid, connection: Moq.Connection) {
 		this.kind = kind;
 		this.path = path;
 
 		this.broadcast = new Watch.Broadcast({
-			connection,
+			origin: connection.origin,
 			enabled: true,
 			name: path,
 			reload: true,
@@ -62,6 +60,7 @@ export class Member {
 		const videoSource = new Watch.Video.Source({
 			broadcast: this.broadcast,
 			supported: Watch.Video.Decoder.supported,
+			probe: connection.probe,
 		});
 		const audioSource = new Watch.Audio.Source({
 			broadcast: this.broadcast,
@@ -72,15 +71,17 @@ export class Member {
 			audioSource.close();
 		});
 
+		const videoJitter = new Signal<Moq.Time.Milli | undefined>(undefined);
 		const sync = new Watch.Sync({
-			latency: "real-time",
-			connection,
-			video: videoSource.out.jitter,
+			delay: "auto",
+			probe: connection.probe,
+			video: videoJitter,
 			audio: audioSource.out.jitter,
 		});
 		this.#signals.cleanup(() => sync.close());
 
 		this.video = new Watch.Video.Decoder(videoSource, sync, { enabled: this.#videoEnabled });
+		this.#signals.proxy(videoJitter, this.video.out.jitter);
 		this.audio = new Watch.Audio.Decoder(audioSource, sync, { enabled: this.#audioEnabled });
 		this.#signals.cleanup(() => {
 			this.video.close();
@@ -122,8 +123,8 @@ export class Member {
 export interface RemoteProps {
 	/** Participant identity. */
 	identity: Moq.Path.Valid;
-	/** Live session, usually a `Connection.Reload`'s `established`. */
-	connection: GetterInit<Established | undefined>;
+	/** Reconnecting connection whose origin supplies this participant's broadcasts. */
+	connection: Moq.Connection;
 }
 
 /**
@@ -155,12 +156,12 @@ export class Remote {
 	/** Published presence fields. */
 	readonly preview: Getter<Preview>;
 
-	#connection: Getter<Established | undefined>;
+	#connection: Moq.Connection;
 	#signals = new Effect();
 
 	constructor(props: RemoteProps) {
 		this.identity = props.identity;
-		this.#connection = getter(props.connection);
+		this.#connection = props.connection;
 		this.camera = this.#camera;
 		this.screen = this.#screen;
 		this.user = readonlys(this.#user);

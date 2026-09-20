@@ -7,7 +7,7 @@ const timeout = Duration(seconds: 10);
 
 void main() {
   test('connects, announces, subscribes, and delivers a frame', () async {
-    final relay = MoqOriginProducer(options: MoqOriginOptions());
+    final relay = MoqOriginProducer(config: MoqOriginConfig());
     final server = MoqServer();
     server.setBind(addr: '127.0.0.1:0');
     server.setTlsGenerate(hostnames: ['localhost']);
@@ -27,20 +27,26 @@ void main() {
       bind: '127.0.0.1:0',
     ).timeout(timeout);
     final serverSession = await accepted;
+    expect(client.bandwidth(), isA<MoqBandwidth>());
 
     final announcement = client.announcements().first;
     final broadcast = relay.createBroadcast(path: 'live');
     final track = broadcast.publishTrack(name: 'events', info: null);
+    broadcast.announce(route: MoqRoute());
     final announced = await announcement.timeout(timeout);
     expect(announced.path(), 'live');
 
-    final consumer = await announced
-        .broadcast()
+    final requested = await client
+        .requestBroadcast(announced.path())
+        .timeout(timeout);
+    final consumer = await requested
         .subscribeTrack(name: 'events', subscription: null)
         .timeout(timeout);
+
+    // Routed subscriptions pull their source lazily when the consumer is first read.
+    final nextGroup = consumer.nextGroup();
     await track.used().timeout(timeout);
 
-    final nextGroup = consumer.nextGroup();
     final producer = track.appendGroup();
     producer.writeFrame(
       frame: MoqFrame(payload: utf8.encode('dart round trip')),
@@ -55,5 +61,39 @@ void main() {
     client.close();
     serverSession.cancel(code: 0);
     server.cancel();
+  });
+
+  test('announce then unannounce is visible', () async {
+    final origin = MoqOriginProducer(config: MoqOriginConfig());
+    final broadcast = origin.createBroadcast(path: 'live');
+    broadcast.publishTrack(name: 'events', info: null);
+    broadcast.announce(route: MoqRoute());
+
+    final announced = origin.consume().announced(prefix: '');
+    final first = await announced.next().timeout(timeout);
+    expect(first?.path(), 'live');
+    expect(first?.active(), isTrue);
+
+    broadcast.unannounce();
+    final retracted = await announced.next().timeout(timeout);
+    expect(retracted?.path(), 'live');
+    expect(retracted?.active(), isFalse);
+    await origin.consume().requestBroadcast(path: 'live').timeout(timeout);
+    announced.cancel();
+    announced.dispose();
+  });
+
+  test('dynamic serves a request under a prefix', () async {
+    final origin = MoqOriginProducer(config: MoqOriginConfig());
+    final dynamic = origin.dynamic_(prefix: 'live', route: MoqRoute());
+    final pending = origin.consume().requestBroadcast(path: 'live/cam');
+    final request = await dynamic.requestedBroadcast().timeout(timeout);
+    expect(request.path(), 'live/cam');
+    final served = MoqBroadcastProducer();
+    request.accept(broadcast: served);
+    await pending.timeout(timeout);
+    dynamic.cancel();
+    dynamic.dispose();
+    served.dispose();
   });
 }

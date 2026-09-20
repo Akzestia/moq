@@ -61,11 +61,6 @@ decode as an unknown key.
 Public API: additive on `moq-net`, `moq-tokio`, `moq-auth`, and `js/net`.
 Wire: none new; the option already exists in every supported draft.
 
-## Required
-
-- [Relay](/quest/m1/auth/relay.md) - the relay builds `moq_auth::Request`
-  there; this quest adds one field to it
-
 ## Related
 
 - [Token in band](/quest/m2/auth/token-in-band.md) - writes the same option

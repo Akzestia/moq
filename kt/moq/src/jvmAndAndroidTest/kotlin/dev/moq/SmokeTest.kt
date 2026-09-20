@@ -1,5 +1,6 @@
 package dev.moq
 
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -30,15 +31,31 @@ private fun opusHead(): ByteArray =
     )
 
 class SmokeTest {
+    @Test
+    fun `stream abort preserves protocol details`() = runTest {
+        BroadcastProducer().use { broadcast ->
+            val track = broadcast.publishTrack("errors", null)
+            val producer = track.appendGroup()
+            val group = broadcast.consume().fetchGroup("errors", 0uL, FetchGroupOptions())
+            producer.abort(404u)
+            val error = assertFailsWith<MoqException.Protocol> { group.readFrame() }
+            assertEquals(ErrorScope.STREAM, error.details.scope)
+            assertEquals(468u, error.details.code)
+            assertEquals(ProtocolKind.APP, error.details.kind)
+        }
+    }
+
     /**
      * Exercises the [Moq.connect] facade end to end without a network: a bogus
      * URL fails fast, and the failure surfaces as a [MoqException]. Also proves
      * the native lib loads through the transitive `moq-ffi` dependency.
+     * One-shot mode, since the default reconnect would retry the dial with
+     * backoff instead of failing.
      */
     @Test
     fun `connect fails fast and surfaces a MoqException`() = runTest {
         val ex = assertFailsWith<MoqException> {
-            Moq.connect("https://localhost:0/test", tlsVerify = false)
+            Moq.connect("https://localhost:0/test", tlsVerify = false, reconnect = false)
         }
         assertTrue(
             ex.isShutdown || ex is MoqException.Connect || ex is MoqException.Url,
@@ -53,9 +70,9 @@ class SmokeTest {
      */
     @Test
     fun `origin alias constructs and consumes`() = runTest {
-        OriginProducer(OriginOptions()).use { origin ->
+        OriginProducer(OriginConfig()).use { origin ->
             origin.consume().use { /* lifecycle smoke */ }
-            origin.dynamic().use { /* dynamic origin smoke */ }
+            origin.dynamic("", Route()).use { /* dynamic origin smoke */ }
         }
     }
 
@@ -70,11 +87,20 @@ class SmokeTest {
         val snapshot: JsonSnapshotConfig = JsonSnapshotConfig(deltaRatio = 8u, compression = false)
         val stream: JsonStreamConfig = JsonStreamConfig(compression = false)
         val properties: VideoProperties = VideoProperties(rotation = 315.0)
+        val backoff: Backoff = Backoff(
+            initialUs = 500_000uL,
+            multiplier = 2u,
+            maxUs = 10_000_000uL,
+            timeoutUs = 0uL,
+        )
+        val status: ConnectionStatus = ConnectionStatus.CONNECTED
         assertEquals(4_000_000uL, hint.bitrate)
         assertEquals(8u, snapshot.deltaRatio)
         assertEquals(false, stream.compression)
         assertNull(properties.display)
         assertNull(properties.flip)
+        assertEquals(500_000uL, backoff.initialUs)
+        assertEquals(ConnectionStatus.CONNECTED, status)
     }
 
     @Test
@@ -103,12 +129,26 @@ class SmokeTest {
         }
     }
 
+    @Test
+    fun `readFrame skips empty then populated groups`() = runTest {
+        BroadcastProducer().use { broadcast ->
+            val track = broadcast.publishTrack("status", null)
+            val consumer = track.consume(null)
+            track.appendGroup().finish()
+            track.appendGroup().finish()
+            track.writeFrame(Frame(payload = "populated".encodeToByteArray(), timestampUs = 2_000uL))
+            val frame = consumer.readFrame()
+            assertEquals("populated", frame?.payload?.decodeToString())
+            assertEquals(2_000uL, frame?.timestampUs)
+        }
+    }
+
     /** A fetched media group streams its decoded frames and then completes. */
     @Test
     fun `media group helper streams fetched frames`() = runTest {
         BroadcastProducer().use { broadcast ->
-            val media = broadcast.publishMedia(
-                Init(format = "opus", data = opusHead(), video = null),
+            val media = broadcast.publishAudio(
+                AudioInit(format = AudioFormat.OPUS, data = opusHead()),
             )
             val consumer = broadcast.consume()
             val (name, audio) = consumer.catalog().audio.entries.single()
@@ -178,8 +218,44 @@ class SmokeTest {
             assertEquals(64, fingerprints[0].length)
 
             server.createBroadcast("live").use { broadcast ->
-                broadcast.setAnnounce(false)
+                broadcast.announce(Route())
+                broadcast.unannounce()
                 broadcast.finish()
+            }
+        }
+    }
+
+    @Test
+    fun `announce then unannounce is visible`() = runTest {
+        OriginProducer(OriginConfig()).use { origin ->
+            origin.createBroadcast("live").use { broadcast ->
+                broadcast.publishTrack("events", null)
+                broadcast.announce(Route())
+                val announced = origin.consume().announced("")
+                val first = announced.next()!!
+                assertEquals("live", first.path())
+                assertTrue(first.active())
+                broadcast.unannounce()
+                val retracted = announced.next()!!
+                assertEquals("live", retracted.path())
+                assertTrue(!retracted.active())
+            }
+        }
+    }
+
+    @Test
+    fun `dynamic serves a request under a prefix`() = runTest {
+        OriginProducer(OriginConfig()).use { origin ->
+            origin.dynamic("live", Route()).use { dynamic ->
+                val pending = async {
+                    origin.consume().requestBroadcast("live/cam")
+                }
+                val request = dynamic.requestedBroadcast()
+                assertEquals("live/cam", request.path())
+                BroadcastProducer().use { served ->
+                    request.accept(served)
+                    pending.await()
+                }
             }
         }
     }
@@ -193,6 +269,35 @@ class SmokeTest {
             track.createGroup(4uL).finish()
             assertFailsWith<MoqException> { track.createGroup(5uL) }
             track.finish()
+        }
+    }
+
+    @Test
+    fun `encode audio with opus object`() {
+        val input = AudioEncoderInput(format = AudioSampleFormat.F32, sampleRate = 48_000u, channels = 1u)
+        val silence = AudioFrame(timestampUs = 0uL, data = ByteArray(960 * 4))
+
+        // The producer retains the codec, so releasing the codec and the
+        // config in either order must still encode.
+        for (codecFirst in listOf(true, false)) {
+            BroadcastProducer().use { broadcast ->
+                val codec = AudioCodec.opus()
+                val output = AudioEncoderOutput(codec = codec)
+                val producer = broadcast.encodeAudio("mic", input, output)
+                if (codecFirst) {
+                    codec.close()
+                } else {
+                    output.destroy()
+                }
+                producer.write(silence)
+                if (codecFirst) {
+                    output.destroy()
+                } else {
+                    codec.close()
+                }
+                assertEquals("mic", producer.name())
+                producer.finish()
+            }
         }
     }
 }

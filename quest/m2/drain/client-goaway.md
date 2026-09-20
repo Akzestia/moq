@@ -16,18 +16,15 @@ drained node is already out of DNS when GOAWAY fires, so a re-resolve is what
 lands clients on a healthy relay.
 
 Everything below describes `dev`, which is where this quest lands: `main`
-still has `moq-native`'s close-only `Reconnect` and no `Connection.Shared`.
-It lands after [#2774](/quest/m1/2774-collapse-reload-and-shared-into-one-connection-class.md)
-collapses `Reload` and `Shared` into one `Connection`, so the drain loop is
-written once into that class and consumers migrate their call sites once;
-where the text below says `Reload` or `Connection.Shared`, read the single
-class and its pool.
+still has `moq-native`'s close-only `Reconnect`. The drain loop is written
+once into `Connection` and its pool.
 
-### Rust is done except the proof
+### Rust policy and proof
 
 On `dev`, `moq_tokio::Connection` already handles GOAWAY: the session loop returns the
-message, `Redirect::resolve` guards the URI (scheme tier never drops, no
-widening to a local host, optional same-host mode), the loop redials while a
+message, `Redirect::resolve` guards the URI (scheme tier never drops, the host
+is pinned to the configured one by default, and `follow` is the opt-in that
+lets a peer name another), the loop redials while a
 `Draining` handle keeps the old session serving until it closes or overstays
 the handover cap, and `Status::Migrating` is visible to callers. Every dial
 resolves DNS again, since `Addrs` holds URLs and each backend resolves at dial
@@ -37,24 +34,23 @@ end-to-end coverage is the cluster sibling test with a redirect.
 Add the fleet-drain regression test: a relay GOAWAYs with an empty URI and a
 timeout, the client redials the configured URL through a fresh resolve (a
 resolver the test can repoint), live tracks hand over at a group boundary,
-and the old session closes within the handover cap. The name-based redirect
-guard stays [its own quest](/quest/m1/2624-moq-native-goaway-redirect-guard-classifies-hosts-by-name.md).
+and the old session closes within the handover cap.
 
 ### JavaScript is greenfield
 
 On `dev`, `js/net` logs the lite GOAWAY URI and keeps that session open,
 logs the IETF draft-17+ URI and then closes the session when its control
 loop ends, and on the draft-14 to -16 shared control stream reads the message
-body but returns without decoding it. Nothing migrates: `Reload` reconnects
-only after `closed` fires, through its backoff, tears the old connection
-down in its effect cleanup, and `Connection.Shared`
-(`js/net/src/connection/pool.ts`) pools by URL href.
+body but returns without decoding it. Nothing migrates: `Connection`
+reconnects only after `closed` fires, through its backoff, tears the old
+connection down in its effect cleanup, and the pool
+(`js/net/src/connection/pool.ts`) keys by URL href.
 
-- Surface the peer's GOAWAY on `Established` as a drain signal carrying the
+- Surface the peer's GOAWAY on the live session as a drain signal carrying the
   resolved URI and the timeout, decoded on every wire the client speaks,
   including the draft-14 to -16 adapter route that currently returns without
   decoding the body it has already read.
-- `Reload` mirrors `Draining`: on GOAWAY it dials the target immediately,
+- `Connection` mirrors `Draining`: on GOAWAY it dials the target immediately,
   swaps the origin wiring (`forwardAnnounced`, `publish`, `subscribe`) once
   the replacement is established, and leaves the old session to close on its
   own or at a handover cap: the configured cap, lowered to the peer's timeout
@@ -62,12 +58,17 @@ down in its effect cleanup, and `Connection.Shared`
   timeout, and the IETF decoder reads an absent one as zero, so absence means
   the cap and never a zero-length handover. Groups in flight finish. A GOAWAY does not go through the backoff delay; a failed
   replacement dial does.
-- Port the guard: follow by default, refuse a scheme-tier drop or a widening
-  to a local host, and offer the same-host mode. An empty URI redials the
-  current URL. A redirect with a certificate pin (`serverCertificateHashes`)
+- Port the guard: same-host by default, refuse a scheme-tier drop or a
+  widening to a local host, and offer the follow mode. An empty URI preserves
+  the current address list, including caller-selected fallbacks, and starts
+  normal migration. A malformed or policy-refused explicit redirect ends the
+  connection with a typed terminal error; it must not trigger a retry against
+  the original address or another configured fallback. Only an accepted
+  redirect replaces the list. Apply and test this policy in Rust as well as JS;
+  do not assume the existing Rust behavior already satisfies it. A redirect with a certificate pin (`serverCertificateHashes`)
   is refused unless the host is unchanged, since the pin cannot verify another
   relay; the pool already refuses to share pinned connections.
-- `Connection.Shared` re-keys its entry to the redirect target, so a later
+- The pool re-keys its entry to the redirect target, so a later
   caller configured with that URL shares the migrated connection. The app's
   handle and shared origin are unchanged; only the pool key moves, and a
   caller still asking for the original URL gets a fresh entry. When the
@@ -84,8 +85,3 @@ down in its effect cleanup, and `Connection.Shared`
   pooled key keeps existing handles on both entries but makes a new caller for
   the original URL dial fresh, each guard refusal closes rather than
   reconnects, and the draft-14 to -16 route decodes the URI.
-
-## Required
-
-- [#2774](/quest/m1/2774-collapse-reload-and-shared-into-one-connection-class.md) - one Connection class first, so GOAWAY is built into it rather than into two
-- [Redirect guard by name](/quest/m1/2624-moq-native-goaway-redirect-guard-classifies-hosts-by-name.md) - pin validated DNS results before enabling cross-host redirects by default

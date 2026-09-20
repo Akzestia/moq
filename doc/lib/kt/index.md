@@ -26,8 +26,9 @@ import dev.moq.*
 // Subscribe. The Flow is live, so run it in its own coroutine.
 Moq.connect("https://relay.example.com", tlsRoots = listOf("ca.pem")).use { moq ->
     moq.announcements("live/").collect { announcement ->
-        val catalog = announcement.broadcast().catalog()
-        println(catalog)
+        // An announcement is a route; its path is relative to the prefix.
+        val broadcast = moq.requestBroadcast("live/" + announcement.path())
+        println(broadcast.catalog())
     }
 }
 ```
@@ -37,7 +38,7 @@ Moq.connect("https://relay.example.com", tlsRoots = listOf("ca.pem")).use { moq 
 // opusInit, packet, pts, and rgba come from your encoder or capture source.
 Moq.connect("https://relay.example.com").use { moq ->
     val broadcast = moq.createBroadcast("my-stream.hang")
-    val audio = broadcast.publishMedia(Init(format = "opus", data = opusInit, video = null))
+    val audio = broadcast.publishAudio(AudioInit(format = AudioFormat.OPUS, data = opusInit))
     audio.writeFrame(Frame(payload = packet, timestampUs = 20_000u))
 
     val video = broadcast.publishVideo(
@@ -45,16 +46,37 @@ Moq.connect("https://relay.example.com").use { moq ->
         VideoEncoderOutput(codec = VideoCodec.H264, track = "camera", bitrate = null, gop = null, kind = autoEncoder),
     )
     video.write(VideoFrame(timestampUs = pts, data = rgba))
+    broadcast.announce(Route())
 }
 ```
 
+The three advertising operations: `moq.createBroadcast(path)` (or
+`origin.createBroadcast`) returns an unadvertised producer;
+`broadcast.announce(route)` / `broadcast.unannounce()` own that exact-path
+advertisement; `origin.dynamic(prefix, route)` claims `prefix` and every
+path beneath it (`""` for everything). Hold the returned `OriginDynamic`
+while the claim should stay advertised, and reject the requests you will not
+serve. A route is a capability, not an inventory; `announcement.path()` is
+the covered prefix.
+
+Sessions reconnect with backoff when the transport drops and re-announce local
+broadcasts. `moq.epoch()` counts the connections, 1 on the first, pairing with
+`MoqSession.status` to log each reconnect; the `backoff` argument tunes the
+pacing (`timeoutUs = 0` retries forever); and `maxStreams` raises the peer's
+inbound stream cap.
+
 `Server.listen(bind, tlsGenerate = ...)` accepts sessions with per-request
-`accept()`/`reject()`. JSON tracks take `@Serializable` types
+`accept()`/`reject()`. Generated configuration setters, including
+`MoqRequest.setPublish`/`setConsume`, throw if a connect, listen, or accept is
+in flight, or after cancel. JSON tracks take `@Serializable` types
 (`publishJsonSnapshot`, `publishJsonStream`, `valuesAs<T>()`), and the rest of
 the [shared feature list](/lib/#what-every-binding-can-do) maps one to one:
-`fetchGroup`/`fetchMediaGroup`, `dynamic()`, `appendDatagram`/`datagrams()`,
-`setCatalogSection`, `used()`/`unused()`. `MoqException.isAuth` and
-`isShutdown` classify errors. Cancelling the collecting coroutine cancels the
+`fetchGroup`/`fetchMediaGroup`, `dynamic()` for tracks and `dynamic(prefix)` for broadcasts, `appendDatagram`/`datagrams()`,
+`setCatalogSection`, `used()`/`unused()`. `session.bandwidth()` divides the
+connection's send estimate; pass it to `encodeVideo` / `encodeAudio` or
+`reserve` a share for an app-owned track. `MoqException.isAuth` and
+`isShutdown` classify errors. `protocolError` is the structured protocol failure
+(scope, verbatim code, kind) when the peer sent one. Cancelling the collecting coroutine cancels the
 native side.
 
 - API reference: [javadoc.io/doc/dev.moq/moq](https://javadoc.io/doc/dev.moq/moq)

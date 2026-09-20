@@ -1,19 +1,27 @@
-# [L] Rust E2EE core
+# [M] Rust E2EE core on moq-e2ee-00
 
 ## Goal
 
-A reusable Rust E2EE layer protects MoQ groups, datagrams, catalogs, and opaque track identities with the shared profile.
+`rs/moq-e2ee` implements profile `moq-e2ee-00` with the library shape in the
+[questline](/quest/m2/e2ee/README.md): epoch-scoped generations, monotonic
+identities, and no state that has to survive a publisher instance.
 
-It gives native publishers and subscribers the same context-aware contract as TypeScript without putting content keys in relays.
+The crate is unpublished, so this is a reshape in place, not a compatibility layer.
 
 ## Plan
 
-- Add a crate above `moq-net` that owns the credential, name derivation, track/domain keys, group frame ordinals, datagram sequences, duplicate window, and typed authentication outcomes.
-- Wrap complete producer and consumer group/datagram lifecycles rather than installing a bytes-only `PayloadProcessor` inside `moq-net`. Use the linked `moq-secure` work from [#3023](https://github.com/moq-dev/moq/issues/3023) as implementation prior art only where it satisfies the settled profile.
-- Make exclusive identity ownership and ordered publication explicit in types. Reject sequence reuse and exhaustion before encryption, retain ciphertext for retransmission, zeroize owned key bytes, and keep secrets out of errors, tracing, debug output, and serialization.
-- Measure grouped-frame and datagram throughput to choose and document bounded processing defaults without changing the wire profile.
-- Pass every shared positive and negative vector, then cover protected payload ceilings, group replacement, retransmission, bad-group termination, bad-datagram events, and cancellation. Exercise grouped tracks on both transports and datagrams on moq-lite.
+- Replace `Credential::new(profile, context, generation, kid, secret)` with `Credential::new(Config { context, kid, secret })` and `Credential::generate(context, kid)`. Drop `profile`, `Pin`, `check_pin`, `prk_bytes`, `name_info`, `key_info`, and `key_bytes` from the public surface; the crate is the profile and the vectors run in-crate.
+- Add `Credential::path(semantic) -> Path`, the epoch-free opaque broadcast name from [Opaque broadcast path](/quest/m2/e2ee/path.md), and `Generation` from `credential.generation(epoch)`. It owns `name(semantic) -> Name`, `produce(moq_net::track::Producer) -> track::Producer`, `consume(moq_net::track::Subscriber) -> track::Consumer`, and `Epoch::mint()` returning a lowercase UUIDv7 via the `uuid` crate (`v7` feature, added to `[workspace.dependencies]`). `Name` replaces `PhysicalName`; `Epoch` is a validated path segment (nonempty, no `/`, at most 65535 bytes).
+- Delete `Publication` and its process-global generation set, `retransmit_datagram`, `datagram_ciphertext`, `group::Producer::ciphertext`, the producer-side datagram retention map, `GroupWindow`, `set_subscribe`, `datagram_payload_limit`, `varint_len`, and the `catalog` module. Keep `TrackKey`, `protect`, `open`, and `nonce` crate-private.
+- `track::Producer` allocates sequences monotonically and refuses `create_group` or `insert_datagram` below the next sequence with `Reuse`; that is the only reuse rule. Frames are numbered by write order. The datagram plaintext cap is the constant `MAX_DATAGRAM_PLAINTEXT` (1160).
+- `track::Consumer` keeps the datagram sliding window as a 1024-bit bitmask below the greatest opened sequence, marks only after a successful open, counts failed opens against the key, and aborts the inner subscriber once a grouped frame fails authentication so a caller cannot keep polling a dead track.
+- Swap `include_str!("../../../drafts/moq-e2ee-01.json")` for the `-00` vectors, then delete `drafts/moq-e2ee-01.json` and `drafts/moq-e2ee-01.ts`; `just drafts check` globs the remaining generator. Keep the lifecycle tests the draft requires: monotonic allocation, exhaustion with failed opens counted, bounded datagram suppression, and a new epoch authenticating while the old keys do not.
+- Update `doc/lib/rs/index.md`, the crate README, and the changelog to the new surface. No wire change; the draft already carries the profile.
 
 ## Required
 
-- [Encryption profile](/quest/m2/e2ee/profile.md) - fixes the interoperable wire and security contract
+- [Opaque broadcast path](/quest/m2/e2ee/path.md) - settles the path derivation and vectors this crate implements
+
+## Related
+
+- [TypeScript E2EE core](/quest/m2/e2ee/typescript.md) - mirrors this surface name for name

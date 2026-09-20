@@ -16,7 +16,9 @@ This questline adds an AUTH exchange to both wires: one stream per token, a
 grant per token, the union of every accepted token as the session's scope,
 and a loud failure when a publish can never be honored. It ends with the
 credential able to travel in band, while the URL keeps working for every peer
-that predates the stream.
+that predates the stream. Direct peer sessions need a second credential: a
+relay-signed, hop-bound grant that a browser can verify without a signing
+key, which HMAC relay keys cannot provide.
 
 ## Plan
 
@@ -32,31 +34,32 @@ Decisions settled while planning, recorded so review does not relitigate them:
   [moq-wg #1854](https://github.com/moq-wg/moq-transport/issues/1854): the
   grant names the peer's role in transport.
 - **Tokens union.** A client with two tokens opens two streams and the
-  session's scope is the union of both grants. A refresh is a new stream
-  carrying the new token; nothing replaces or narrows anything. Closing a
-  stream withdraws that token. When a token expires or is revoked and the
-  union would shrink, the session closes `Unauthorized` exactly as expiry does
-  today; when the union is unchanged the session continues and only that
-  stream ends. Resizing a live session in place belongs to
-  [Origin scopes](/quest/m2/path-patterns/origin.md), which serves
-  revalidation and token expiry from one path.
-- **A grant is publish prefixes, subscribe prefixes, and an expiry**, in the
-  presenter's own root; the presenter never sees the relay-side root, and
-  every token in a union shares the connection's root. The prefix encoding is
-  whatever lite-06 ANNOUNCE_REQUEST carries, so
-  [Pattern interest](/quest/m2/path-patterns/interest.md) upgrades both to
-  patterns in one change. `origin::Producer::allowed()` on an unscoped handle
-  yields the single empty prefix, and `scope(&[])` is `None`, so the wire
-  keeps that spelling: a list holding `""` is everything, an empty list is
-  nothing.
+  session's scope is the union of both grants. Refresh adds a new token;
+  closing a stream withdraws it. Expiry, revocation, or withdrawal recomputes
+  the union and cancels publications and subscriptions that lose authorization.
+  Other authorized work continues on the same session. An empty union leaves
+  the session connected with no access, so it can accept a fresh token.
+  [Origin narrowing](/quest/m2/origin-narrowing.md) owns the common resize
+  operation; relay token handling requires it rather than shipping a temporary
+  close-on-shrink policy.
+- **A public grant contains publish patterns, subscribe patterns, and an
+  expiry**, in the presenter's own root; the presenter never sees the relay-side
+  root, and every token in a union shares the connection's root. Unscoped
+  permission is `**`; an empty union grants nothing. Legacy AUTH wire codecs
+  explicitly convert representable prefix unions, where `[""]` means all,
+  and refuse patterns they cannot represent. [Pattern interest](/quest/m2/path-patterns/interest.md)
+  upgrades AUTH and ANNOUNCE_REQUEST wire fields together without changing
+  the public pattern-valued grant type.
 - **Fail loud by aborting the session.** A publisher whose origin announces a
   broadcast outside the union aborts the session with `Unauthorized`, naming
   the path. The check runs against the grants in hand once the tokens the
   library itself presented at setup are answered; a token the app adds later
   is the app's to await before publishing what it unlocks. The origin is
   untouched, so a broadcast shared across sessions (P2P hops, a cluster) is
-  refused only where it is refused. Apps that want to decide themselves read
-  the grant instead.
+  refused only where it is refused. Grant shrinkage cancels previously
+  authorized work on this session without aborting it or deleting the shared
+  origin; this is distinct from attempting a new unauthorized publication.
+  Apps that want to decide themselves read the grant instead.
 - **Older peers keep the URL.** WebTransport negotiates the moq version as a
   subprotocol of the same CONNECT request that carries the URL, so a client
   cannot learn whether the peer speaks AUTH before the token has to be sent.
@@ -65,12 +68,13 @@ Decisions settled while planning, recorded so review does not relitigate them:
   AUTH-capable; extra tokens go in band and are simply absent on an old peer.
   Nothing is refused and nothing is silent.
 - **Cluster peers keep mTLS.** A relay opens AUTH toward its peer with an empty
-  token like any client; both directions learn the unrestricted grant. Mutual
-  scoped trust between relays is a later quest.
+  token like any client; AUTH reports the grant actually admitted in each
+  direction. The M2 mTLS scope quest can restrict or refuse it. A v1 endpoint
+  must explicitly grant `**` for unrestricted access; AUTH does not widen a
+  scoped grant because the caller is another relay.
 - **Client API is dev's.** Tokens live on `moq_tokio::connect::Config`, the
   dial-side config already on dev, and `Connection` exposes the live
-  session's auth handle. Quests touching that surface branch from dev, or
-  from main once [merge-dev](/quest/m1/merge-dev.md) lands.
+  session's auth handle. Quests touching that surface branch from main once [merge-dev](/quest/m1/merge-dev.md) lands.
 - **Spec home.** The AUTH stream is lite-06 core in
   `drafts/draft-lcurley-moq-lite.md`, the way routing is. moq-transport gets
   `drafts/draft-lcurley-moq-auth.md`, a setup-option-negotiated extension with
@@ -90,8 +94,7 @@ ALPN.
   exchange grants over AUTH streams, exposed as `Session::auth()`, and an
   out-of-scope announce aborts the session
 - [Relay tokens](/quest/m2/auth/relay-refresh.md) - the relay verifies tokens
-  sent in band, unions their grants, and closes only when an expiry shrinks
-  the union
+  sent in band, unions their grants, and cancels only work that loses access
 - [moq-transport](/quest/m2/auth/moq-transport.md) - the same exchange as a
   setup-option extension on draft-17+, specified in a new draft
 - [Bindings](/quest/m2/auth/bindings.md) - grants and tokens reach every
@@ -99,16 +102,14 @@ ALPN.
 - [Token in band](/quest/m2/auth/token-in-band.md) - the credential can leave
   the URL: a session starts on what the URL carried and its AUTH streams add
   the rest, with the URL kept for peers below lite-06
+- [Peer grants](/quest/m2/auth/peer-grant.md) - the relay issues a hop-bound,
+  asymmetrically signed grant a browser can verify; HS256 keys issue none
 
 ## Related
 
-- [Origin scopes](/quest/m2/path-patterns/origin.md) - resizes a live session
+- [Origin narrowing](/quest/m2/origin-narrowing.md) - resizes a live session
   when the union shrinks, for revalidation and token expiry alike
-- [Auth server](/quest/m1/auth/README.md) - the request and grant a token
-  presented in band goes through
-- [Pattern interest](/quest/m2/path-patterns/interest.md) - moves the grant's
-  prefixes to patterns along with ANNOUNCE_REQUEST
+- [Pattern interest](/quest/m2/path-patterns/interest.md) - moves AUTH's legacy wire prefixes to patterns along with ANNOUNCE_REQUEST
 - [Expiring media grants](/quest/m2/processor/grant-lease.md) - a worker's
   lease renewal is a new in-band token
-- [Connect auth race](/quest/m0/3532-connect-auth-race.md) - the connect-time
-  auth error this questline does not change
+- [P2P](/quest/m2/p2p/README.md) - the first consumer of hop-bound peer grants

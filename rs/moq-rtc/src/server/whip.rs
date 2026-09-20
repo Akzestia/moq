@@ -94,16 +94,23 @@ pub async fn accept(
 	offer: &str,
 ) -> Result<Response> {
 	let offer = sdp::parse_offer(offer)?;
+	let broadcast = broadcast.as_path();
 
 	// Create the broadcast on the publish origin before negotiating, so a
 	// fast subscriber doesn't see a 404 in the gap between the SDP answer
 	// and the first RTP packet.
 	let producer = publisher
-		.create_broadcast(broadcast, moq_net::broadcast::Route::new().with_announce(true))
+		.create_broadcast(&broadcast)
 		.map_err(|err| Error::Other(anyhow::anyhow!("failed to create broadcast: {err}")))?;
+	producer
+		.announce(moq_net::origin::Route::default())
+		.map_err(|err| Error::Other(anyhow::anyhow!("failed to announce broadcast: {err}")))?;
 
 	let handle = producer.clone();
-	let sink = Box::new(IngestSink::new(producer)?);
+	let config = moq_mux::catalog::Config::default()
+		.with_max_age(server.config().max_age)
+		.with_bandwidth(server.config().bandwidth.clone());
+	let sink = Box::new(IngestSink::new(producer, config)?);
 
 	// Register a session on the shared media mux: known ICE credentials (so the
 	// demux routes this peer's STUN by ufrag), an inbox to read datagrams from,
@@ -114,11 +121,11 @@ pub async fn accept(
 		.set_local_ice_credentials(creds)
 		.build(std::time::Instant::now());
 	for addr in mux.candidates() {
-		let cand = Candidate::host(*addr, "udp").map_err(str0m::RtcError::from)?;
+		let cand = Candidate::host(*addr, "udp").map_err(Error::rtc)?;
 		rtc.add_local_candidate(cand);
 	}
 
-	let answer = rtc.sdp_api().accept_offer(offer).map_err(Error::Rtc)?;
+	let answer = rtc.sdp_api().accept_offer(offer).map_err(Error::rtc)?;
 	let resource_id = sdp::new_resource_id();
 	let session = session::Session::ingest(rtc, mux.socket(), mux.candidates().to_vec(), inbound, sink);
 

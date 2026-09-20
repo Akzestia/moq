@@ -93,22 +93,25 @@ The rest of the pipeline is assembled around it: a `Source` picks a rendition,
 a `Decoder` decodes it, `Sync` paces both media clocks, and a `Renderer` /
 `Emitter` paints to a canvas and plays through WebAudio.
 
+Standalone components start enabled when `enabled` is omitted. Pass `false` or a live signal when
+activation follows application lifecycle state.
+
 ```typescript
 import * as Watch from "@moq/watch";
 
-const connection = new Watch.Net.Connection.Reload({
+const connection = new Watch.Net.Connection({
     url: new URL("https://relay.example.com/anon"),
     enabled: true,
 });
 
 const broadcast = new Watch.Broadcast({
-    connection: connection.established,
+    origin: connection.origin,
     enabled: true,
     name: Watch.Net.Path.from("room/alice.hang"),
 });
 
-const source = new Watch.Video.Source({ broadcast, supported: Watch.Video.Decoder.supported });
-const sync = new Watch.Sync({ connection: connection.established, video: source.out.jitter });
+const source = new Watch.Video.Source({ broadcast, supported: Watch.Video.Decoder.supported, probe: connection.probe });
+const sync = new Watch.Sync({ probe: connection.probe });
 const decoder = new Watch.Video.Decoder(source, sync, { enabled: true });
 
 // Video renders to a <canvas>; there is no MediaStream to assign.

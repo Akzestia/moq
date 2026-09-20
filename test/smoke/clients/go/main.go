@@ -19,13 +19,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/moq-dev/moq-go/moq"
+	"moq.dev/moq"
 )
 
 const readChunk = 64 * 1024
 
-// SubscribeMedia congestion-control / lookahead window.
-const latencyMaxMs = 1_000
+// SubscribeMedia max age: how much reordering the jitter buffer tolerates.
+const maxAgeUs = 1_000_000
 
 func publish(ctx context.Context, url, broadcast string) error {
 	client, err := moq.Dial(ctx, url, moq.WithTLSVerify(false))
@@ -41,8 +41,11 @@ func publish(ctx context.Context, url, broadcast string) error {
 	}
 	defer producer.Finish()
 
-	media, err := producer.PublishMediaStream("avc3")
+	media, err := producer.PublishVideoStream(moq.VideoFormatAvc3)
 	if err != nil {
+		return err
+	}
+	if err := producer.Announce(moq.Route{}); err != nil {
 		return err
 	}
 	fmt.Printf("publishing %q (Annex-B H.264 from stdin) to %s\n", broadcast, url)
@@ -71,7 +74,7 @@ func publish(ctx context.Context, url, broadcast string) error {
 // encodes on demand) may announce video in a later update rather than the first
 // snapshot, so wait for a catalog that actually has a video track.
 func catalogWithVideo(ctx context.Context, consumer *moq.BroadcastConsumer) (*moq.Catalog, error) {
-	catalogs, err := consumer.SubscribeCatalog()
+	catalogs, err := consumer.SubscribeCatalog(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +126,7 @@ func subscribe(ctx context.Context, url, broadcast string, timeout time.Duration
 		break
 	}
 
-	media, err := consumer.SubscribeMedia(name, video.Container, &moq.Subscription{LatencyMaxMs: latencyMaxMs})
+	media, err := consumer.SubscribeMedia(ctx, name, video.Container, &moq.Subscription{MaxAgeUs: maxAgeUs})
 	if err != nil {
 		return err
 	}

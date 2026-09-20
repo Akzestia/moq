@@ -53,8 +53,8 @@ One per protocol flavour, since negotiation is the part that broke:
 | name    | relay                            | negotiates                             |
 | ------- | -------------------------------- | -------------------------------------- |
 | `lite`  | defaults                         | `moq-lite-05`, over its own ALPN       |
-| `ietf`  | `--server-version moq-transport-19` | `moq-transport-19`, over its own ALPN  |
-| `setup` | `--server-version moq-lite-02`   | the `moql` ALPN, version chosen by SETUP |
+| `ietf`  | `--listen-version moq-transport-19` | `moq-transport-19`, over its own ALPN  |
+| `setup` | `--listen-version moq-lite-02`   | the `moql` ALPN, version chosen by SETUP |
 
 The `setup` relay is as close as a real relay gets to the SETUP fallback path.
 The branch that maps the browser's empty `protocol()` to `None` needs a server

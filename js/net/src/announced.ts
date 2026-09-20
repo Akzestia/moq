@@ -1,28 +1,53 @@
 /**
- * Broadcast announcement streams: which broadcast paths are available under a prefix.
+ * Broadcast announcement streams: which broadcast paths are available under a scope.
  *
  * @module
  */
 import { Effect, type GetPromise, type Getter, type GetterInit, getter, Once, Signal } from "@moq/signals";
 import type * as broadcast from "./broadcast.js";
 import type { Established } from "./connection/established.js";
+import type { Route } from "./hop.js";
+import type { Table as OriginTable } from "./origin.js";
 import * as Path from "./path.js";
 
 /**
- * The availability of a broadcast.
+ * What an {@link Update} reports about its path.
  *
  * @public
  */
-export interface Event {
-	/** Broadcast path relative to the prefix passed to `announced()`. */
+export type Kind = "announced" | "updated" | "retracted";
+
+/**
+ * A route announcement, update, or retraction.
+ *
+ * A route claims that {@link path} and every path beneath it can be served; it
+ * carries no broadcast. By convention a publisher announces each broadcast's exact
+ * path, so enumerating routes enumerates broadcasts; resolve one with the origin's
+ * `request(path)`. Narrow with a {@link Path.Pattern} locally to follow a subset.
+ *
+ * @public
+ */
+export interface Update {
+	/**
+	 * The prefix the route covers, relative to the origin (for a session, its URL path).
+	 */
 	path: Path.Valid;
-	/** True when the broadcast is available, false when it was removed. */
-	active: boolean;
+	/** What the filter's wildcards stood for, when this prefix pins all of them. */
+	captures: Path.Pattern[] | undefined;
+	/** Whether the path was announced, re-priced, or retracted. */
+	kind: Kind;
+	/** Hops and cost of the route; on a retraction, its last advertised values. */
+	route: Route;
+}
+
+/** Whether a route covers the path after an update of this {@link Kind}. */
+export function isActive(kind: Kind): boolean {
+	return kind !== "retracted";
 }
 
 /** Reactive backing state shared by announcement producers and consumers. */
 class AnnounceState {
-	queue = new Signal<Event[]>([]);
+	queue = new Signal<Update[]>([]);
 	closed = new Once<Error | null>();
 }
 
@@ -41,14 +66,7 @@ function closeState(state: AnnounceState, abort?: Error) {
  * @public
  */
 export class Producer {
-	/** Path prefix this stream is scoped to. */
-	prefix: Path.Valid;
-
 	#state = new AnnounceState();
-
-	constructor(prefix = Path.empty()) {
-		this.prefix = prefix;
-	}
 
 	/**
 	 * Settles once the stream closes: `null` on a clean close, or the abort {@link Error}.
@@ -60,14 +78,14 @@ export class Producer {
 
 	/** A read handle for this announcement stream. */
 	consume(): Consumer {
-		return makeConsumer(this.prefix, this.#state);
+		return makeConsumer(this.#state);
 	}
 
 	/** Writes an announcement to the queue. */
-	append(event: Event) {
+	append(update: Update) {
 		if (this.#state.closed.peek() !== undefined) throw new Error("announcements are closed");
 		this.#state.queue.mutate((queue) => {
-			queue.push(event);
+			queue.push(update);
 		});
 	}
 
@@ -79,24 +97,20 @@ export class Producer {
 
 // Constructs a Consumer from within this module without exposing a public constructor
 // that would leak the unexported AnnounceState. Assigned in the class's static block.
-let makeConsumer: (prefix: Path.Valid, state: AnnounceState) => Consumer;
+let makeConsumer: (state: AnnounceState) => Consumer;
 
 /**
  * The read side of an announcement stream.
  *
  * Created internally: obtain one from {@link Producer.consume} or the connection's
- * `announced(prefix)`.
+ * `announced(scope)`.
  *
  * @public
  */
 export class Consumer {
-	/** Path prefix this stream is scoped to. */
-	prefix: Path.Valid;
-
 	#state: AnnounceState;
 
-	private constructor(prefix: Path.Valid, state: AnnounceState) {
-		this.prefix = prefix;
+	private constructor(state: AnnounceState) {
 		this.#state = state;
 	}
 
@@ -106,11 +120,20 @@ export class Consumer {
 	}
 
 	static {
-		makeConsumer = (prefix, state) => new Consumer(prefix, state);
+		makeConsumer = (state) => new Consumer(state);
+	}
+
+	/** The announcements as they arrive, until the stream closes. */
+	async *[Symbol.asyncIterator](): AsyncGenerator<Update, void, undefined> {
+		for (;;) {
+			const update = await this.next();
+			if (!update) return;
+			yield update;
+		}
 	}
 
 	/** Returns the next announcement. */
-	async next(): Promise<Event | undefined> {
+	async next(): Promise<Update | undefined> {
 		for (;;) {
 			const announce = this.#state.queue.peek().shift();
 			if (announce) return announce;
@@ -134,20 +157,38 @@ export class Consumer {
 const warnedNoDiscovery = new WeakSet<Established>();
 
 /**
- * What to watch, for {@link Broadcast}.
+ * What to watch, for {@link Broadcast}: a path on exactly one source, enforced by the
+ * union so a call with neither or both does not compile.
  *
  * @public
  */
-export interface BroadcastProps {
-	/**
-	 * The connection to watch on. Accepts a live {@link Established} session, or a reactive one
-	 * (a `Connection.Reload`'s `established`), which is how the handle survives reconnects.
-	 */
-	connection: GetterInit<Established | undefined>;
-
+export type BroadcastProps = {
 	/** The broadcast path to watch. */
 	path: Path.Valid;
-}
+} & (
+	| {
+			/**
+			 * The connection to watch on. Accepts a live {@link Established} session from
+			 * `Connection.connect`, or a reactive one, which is how the handle survives
+			 * reconnects. Prefer an origin-backed handle on a reconnecting `Connection`.
+			 */
+			connection: GetterInit<Established | undefined>;
+			origin?: undefined;
+	  }
+	| {
+			/**
+			 * The origin to watch instead of a session.
+			 *
+			 * The handle then follows the origin's table: it resolves whenever anything
+			 * routes the path (a local publish, or any session feeding the origin), which is
+			 * how it spans reconnects without watching the connection itself. While every
+			 * attached session lacks discovery it falls back to a standing request, so
+			 * `active` means assumed present.
+			 */
+			origin: GetterInit<OriginTable | undefined>;
+			connection?: undefined;
+	  }
+);
 
 /**
  * A reactive handle to a single broadcast: {@link Broadcast.active} holds a live
@@ -163,8 +204,9 @@ export interface BroadcastProps {
  * subscription resumes across the new route, so `active` holds the same consumer throughout and
  * never goes offline. Only a change of publisher produces an offline/online transition.
  *
- * Built from a reconnecting `Connection.Reload`, the handle also spans reconnects: the broadcast
- * drops to `undefined` while disconnected and resolves again once the new connection announces it.
+ * Built from a reconnecting `Connection`'s origin, the handle also spans reconnects: the
+ * broadcast drops to `undefined` while disconnected and resolves again once the new connection
+ * announces it.
  *
  * Falls back to consuming blind (and warns once) on a relay without
  * {@link Established.discovery}, where there is no announcement to wait for. `active` then
@@ -174,9 +216,11 @@ export interface BroadcastProps {
  * after a publisher finally appears succeeds.
  *
  * If discovery fails on a live session (the announcement stream is reset, or the relay
- * refuses it) the handle goes offline and stays there: nothing reopens the stream on that
- * connection. Build it from a `Connection.Reload` if you need it to recover, since a new
- * connection starts a new stream.
+ * refuses it) a connection-backed handle goes offline and stays there: nothing reopens the
+ * stream on that connection. Build it from a reconnecting `Connection`'s origin if you need
+ * it to recover, since a new session starts a new stream. An origin-backed handle recovers
+ * on its own: the session stops counting as discovering, so the handle falls back to a
+ * standing request.
  *
  * Close it to release the announcement stream and the current broadcast.
  *
@@ -201,15 +245,21 @@ export class Broadcast {
 	#signals = new Effect();
 
 	/**
-	 * Watch a path on a connection.
+	 * Watch a path on a connection or an origin.
 	 *
 	 * Prefer `announcedBroadcast(path)` on the connection itself. Reach for this when the
-	 * session you want to follow isn't either connection type, e.g. your own
-	 * `Getter<Established | undefined>`.
+	 * source you want to follow isn't either connection type, e.g. your own
+	 * `Getter<Established | undefined>` or an origin fed by a `consume` option.
 	 */
-	constructor({ connection, path }: BroadcastProps) {
+	constructor({ connection, path, origin }: BroadcastProps) {
 		this.path = path;
 		this.active = this.#active;
+
+		if (origin) {
+			const source = getter(origin);
+			this.#signals.run((effect) => this.#runOrigin(effect, source));
+			return;
+		}
 
 		const source = getter(connection);
 		this.#signals.run((effect) => {
@@ -240,7 +290,8 @@ export class Broadcast {
 				return;
 			}
 
-			const announced = conn.announced(path);
+			const scope = Path.Pattern.subtree(path);
+			const announced = conn.announced(scope);
 			effect.cleanup(() => announced.close());
 
 			let current: broadcast.Consumer | undefined;
@@ -260,10 +311,11 @@ export class Broadcast {
 						const event = await Promise.race([effect.cancel, announced.next()]);
 						if (!event) break;
 
-						// Scoped to `path`, so the exact broadcast arrives with an empty suffix; ignore children.
-						if (event.path !== Path.empty()) continue;
+						// Routes covering this path clamp to it; one beneath it is a different
+						// broadcast and is skipped.
+						if (event.path !== path) continue;
 
-						if (event.active) {
+						if (isActive(event.kind)) {
 							// A live subscription survives a redundant (re-)announce; only replace a dead one.
 							if (current && current.closed.peek() === undefined) continue;
 							current?.close();
@@ -284,6 +336,82 @@ export class Broadcast {
 				offline();
 			});
 		});
+	}
+
+	// Follow the origin's table instead of a session's announce stream. The table already
+	// merges every source (local publishes, every feeding session), so this is simpler than
+	// the session path: no hop bookkeeping, and the table's identity-diffed announcements
+	// retract before a republish, which is what lets a plain re-consume suffice.
+	#runOrigin(effect: Effect, source: Getter<OriginTable | undefined>): void {
+		const origin = effect.get(source);
+		if (!origin) return;
+
+		// The two ways the broadcast can resolve. The table wins: it is knowledge (a local
+		// publish or an announcement) while a request's answer is only assumed present.
+		const table = new Signal<broadcast.Consumer | undefined>(undefined);
+		const requested = new Signal<broadcast.Consumer | undefined>(undefined);
+		effect.run((nested) => {
+			nested.set(this.#active, nested.get(table) ?? nested.get(requested), undefined);
+		});
+
+		// Follow the table regardless of sessions: a local publish resolves with no
+		// connection at all (and keeps resolving while one reconnects), and the
+		// identity-diffed announcements swap the handle on a republish.
+		// The scope is the path's subtree: the exact path plus everything beneath it.
+		const scope = Path.Pattern.subtree(this.path);
+		const announced = origin.announced(scope);
+		effect.cleanup(() => announced.close());
+
+		// Held open while the path is announced. A request resolves to the table's route when
+		// there is one, and a session skips answering a path the table routes, so within the
+		// announced window this can only ever produce the announced broadcast. Follow
+		// `active` rather than peeking once: a dynamic accept lands after the announcement.
+		const live = new Signal(false);
+		effect.run((nested) => {
+			if (!nested.get(live)) {
+				nested.set(table, undefined);
+				return;
+			}
+			const request = origin.request(this.path);
+			nested.cleanup(() => request.close());
+			nested.run((inner) => {
+				inner.set(table, inner.get(request.active), undefined);
+			});
+		});
+
+		effect.spawn(async () => {
+			for (;;) {
+				const event = await Promise.race([effect.cancel, announced.next()]);
+				if (!event) break;
+
+				// Routes covering this path clamp to it; one beneath it is a different
+				// broadcast and is skipped.
+				if (event.path !== this.path) continue;
+				live.set(isActive(event.kind));
+			}
+
+			// The origin closed, or this run was torn down. Either way nothing routes the path.
+			live.set(false);
+		});
+
+		// Blind fallback: while any attached session cannot announce, the table is an
+		// incomplete picture of what is reachable, so stand a request for whichever session
+		// answers. Gated on exactly `false`: with no session there is nobody to ask, and with
+		// every session announcing the gate is the point, so a blind subscribe would defeat it.
+		effect.run((nested) => {
+			if (nested.get(origin.discovery) !== false) return;
+
+			const request = origin.request(this.path);
+			nested.cleanup(() => request.close());
+			nested.run((inner) => {
+				inner.set(requested, inner.get(request.active), undefined);
+			});
+		});
+	}
+
+	/** Resolves once the handle is closed, so an owner can drop its reference. */
+	get closed(): Promise<void> {
+		return this.#signals.closed;
 	}
 
 	/** Closes the handle and the broadcast it currently holds. Idempotent. */

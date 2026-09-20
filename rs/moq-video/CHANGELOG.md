@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- [**breaking**] `encode::Producer::finish` borrows (`&mut self`) instead of consuming, so a later
+  `abort(self)` can still run after a clean end.
+
 ## [0.0.25](https://github.com/moq-dev/moq/compare/moq-video-v0.0.24...moq-video-v0.0.25) - 2026-09-17
 
 ### Other
@@ -39,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where `into_rgba` consumed it
 - *(moq-video)* `Surface::to_i420` is public, the borrowing counterpart to
   `into_i420`
+
+### Fixed
+
+- `encode::Producer` carries a rendition's `label` into the catalog. It copied the config into hints
+  field by field and had no case for the new field.
 
 ## [0.0.23](https://github.com/moq-dev/moq/compare/moq-video-v0.0.22...moq-video-v0.0.23) - 2026-09-09
 

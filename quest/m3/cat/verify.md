@@ -11,6 +11,11 @@ tokens. Every claim we do not evaluate refuses the token naming the claim.
 
 ## Plan
 
+The JWT types (`Claims`, `Key`, `Jwk`, `KeyId`, `Algorithm`, the key set,
+`authorize`) sit at the `moq_auth` root today. Move them under
+`moq_auth::jwt` first, keeping their names, so `cat` is a sibling module
+rather than a set of prefixed names; `@moq/auth` stays flat.
+
 - Crates: `coset` for COSE and CWT claims, `ciborium` for CBOR; HMAC through
   the `aws-lc-rs` the crate already links, ES256 through `p256`. Keys reuse
   `moq_auth::jwt::Key` files: a JWK with `alg` maps to the COSE algorithm
@@ -47,7 +52,7 @@ tokens. Every claim we do not evaluate refuses the token naming the claim.
   bare `**` with nothing appended. A field value containing `/` or `*`
   cannot be a segment and refuses the token naming the scope. `f*` and `*f`
   are patterns the relay only admits once [Origin
-  scopes](/quest/m2/path-patterns/origin.md) lifts its prefix-shaped
+  scopes](/quest/m1/api-origin-scopes.md) lifts its prefix-shaped
   adapter, which is why that quest is required here. A scope with a track match is refused naming the scope.
   `exp` is `expires`, `moqt-reval` is
   `revalidate`, and `Grant::validate` keeps refusing a cadence without an
@@ -80,10 +85,7 @@ gain flags. Wire: none.
 
 ## Required
 
-- [Package](/quest/m1/auth/package.md) - supplies `moq_auth::jwt`, which
-  `cat` sits beside
-- [Origin scopes](/quest/m2/path-patterns/origin.md) - the relay admits
+- [Origin scopes](/quest/m1/api-origin-scopes.md) - the relay admits
   `f*` and `*f` grants only after it
 - [Setup token](/quest/m3/cat/setup-token.md) - the token reaches the
   server's request
-- [Serve](/quest/m1/auth/serve.md) - the server this extends

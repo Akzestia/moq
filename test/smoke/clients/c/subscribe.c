@@ -107,7 +107,7 @@ static void on_catalog(void *ud, int32_t catalog) {
         moq_video_config vcfg;
         memset(&vcfg, 0, sizeof(vcfg));
         if (moq_consume_video_config((uint32_t)catalog, 0, &vcfg) == 0) {
-            int32_t track = moq_consume_video((uint32_t)catalog, 0, 1000, on_frame, ud);
+            int32_t track = moq_consume_video((uint32_t)catalog, 0, 1000000, on_frame, ud);
             if (track > 0) {
                 pthread_mutex_lock(&c->mu);
                 c->video_track = track;
@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
     }
 
     // origin_publish = 0 disables publishing; consume via our origin.
-    c.session = moq_session_connect(url, strlen(url), 0, (uint32_t)c.origin, on_status, &c);
+    c.session = moq_session_connect(url, strlen(url), NULL, 0, (uint32_t)c.origin, on_status, &c);
     if (c.session <= 0) {
         // A registration that fails never invokes its callback, so &c isn't held
         // yet and returning is still safe here.

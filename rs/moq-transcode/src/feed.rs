@@ -164,7 +164,7 @@ async fn run(inner: Arc<Inner>, sender: broadcast::Sender<Item>) {
 /// Decodes at the stream's native size: the rungs share these frames, so
 /// per-rung sizing happens on their side (`Frame::resize`).
 async fn decode(inner: &Inner, sender: &broadcast::Sender<Item>) -> Result<(), Error> {
-	let container = moq_mux::catalog::hang::Container::try_from(&inner.config.container)?;
+	let container = moq_mux::catalog::hang::Container::try_from(&inner.config)?;
 
 	let mut config = moq_video::decode::Config::new();
 	config.kind = inner.decoder.clone();
@@ -176,9 +176,12 @@ async fn decode(inner: &Inner, sender: &broadcast::Sender<Item>) -> Result<(), E
 
 	// The feed serves whichever rungs are active, so there is no single
 	// downstream subscription to mirror; live-edge defaults fit every rung.
+	// Arrival order on purpose: group order doesn't matter here, since every group
+	// decodes independently from its own keyframe, so there is nothing for a sequence
+	// cursor to buy. Either one drops whatever falls behind the live edge.
 	let mut subscriber = inner.source.subscribe(None).await?;
 
-	while let Some(mut group) = subscriber.next_group().await? {
+	while let Some(mut group) = subscriber.recv_group().await? {
 		// Sends only fail with zero receivers, which is fine: teardown aborts
 		// this task at the next await anyway.
 		let _ = sender.send(Item::Group(group.sequence));

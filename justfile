@@ -44,7 +44,13 @@ dev:
 # Benchmark the current tree, or compare it with a commit: `just bench origin/main`.
 bench $BASE="":
     #!/usr/bin/env bash
-    exec rs/scripts/bench.sh "$BASE"
+    exec just --justfile bench/justfile compare "$BASE"
+
+# Compare one multi-threaded Tokio runtime with the same number of independent
+# Tokio/epoll and io_uring workers. Defaults to every logical CPU.
+bench-runtime $ROUNDS="3" $WORKERS="":
+    #!/usr/bin/env bash
+    exec just --justfile bench/justfile runtime "$ROUNDS" "$WORKERS"
 
 # A linked worktree's Git metadata does not live under its own root: the
 # per-worktree directory is `--git-dir` and everything shared (objects, remote
@@ -434,7 +440,8 @@ _tools $FILES="":
 
     # `_check-common` runs on every invocation, so its tools are unconditional.
     tools=(actionlint bun jq nix nixfmt shellcheck shfmt taplo python3 nfpm dpkg-deb envsubst rpm)
-    scoped '^(quest/|rs/|Cargo\.(toml|lock)$|rust-toolchain\.toml$)' && tools+=(cargo envsubst)
+    scoped '^(drafts/|doc/\.vitepress/drafts\.ts$)' && tools+=(kramdown-rfc xml2rfc)
+    scoped '^(bench/|quest/|rs/|Cargo\.(toml|lock)$|rust-toolchain\.toml$)' && tools+=(cargo envsubst)
     scoped '^(py/|pyproject\.toml$|uv\.lock$|rs/moq-ffi/)'     && tools+=(uv)
     scoped '^(kt/|rs/moq-ffi/)'                                && tools+=(gradle java)
     # cargo because `go check` builds moq-ffi for the host, and skips on a
@@ -505,6 +512,14 @@ check $BASE="":
     if [[ -n "$files" ]]; then
         just js check "$files"
         just rs check-changed "$files"
+        if echo "$files" | grep -q '^bench/'; then
+            just --justfile bench/justfile check
+        fi
+        # Draft sources render into the doc site and carry their own kramdown-rfc
+        # plus vector checks; a drafts-only diff would otherwise skip both.
+        if echo "$files" | grep -qE '^(drafts/|doc/\.vitepress/drafts\.ts$)'; then
+            just drafts check
+        fi
         # Quest documents form one graph, so validate the whole living tree when
         # either a quest or its validator changes.
         if echo "$files" | grep -qE '^(quest/|rs/quest/)'; then
@@ -515,12 +530,13 @@ check $BASE="":
         just swift check "$files"
         just go check "$files"
         just dart check "$files"
-    	# Type-checking the plugin needs only headers, so it runs here rather
-    	# than waiting for obs.yml to link it on Linux. libmoq is in scope
-    	# because the plugin calls through its generated C header, and flake.nix
-    	# because it owns the libobs headers this compiles against -- obs.yml
-    	# links against nixpkgs' obs-studio instead, so nothing else would notice
-    	# that package going bad.
+    	# Type-checking the plugin and its unit tests needs only headers, so it
+    	# runs here rather than waiting for obs.yml to link them on Linux. libmoq
+    	# is in scope because the plugin calls through its generated C header, and
+    	# the tests restate those entry points as stubs, so an ABI change breaks
+    	# both. flake.nix because it owns the libobs headers this compiles
+    	# against -- obs.yml links against nixpkgs' obs-studio instead, so nothing
+    	# else would notice that package going bad.
     	if echo "$files" | grep -qE '^(cpp/obs/|rs/libmoq/|flake\.nix$)'; then
     		just obs compile
     	fi
@@ -548,7 +564,10 @@ check $BASE="":
 check-all *args:
     just _tools ALL
     just js check
+    just drafts check
     just rs check --workspace --exclude moq-net-fuzz {{ args }}
+    just rs tokio-features
+    just --justfile bench/justfile check
     cargo run --quiet --locked --package quest -- check
     # Not covered by the line above: moq-wasm only exists on the wasm32 target.
     just rs wasm
@@ -759,7 +778,7 @@ fix $BASE="":
     	just js fix "$files"
     	just rs fix-changed "$files"
     	just py fix "$files"
-    	just dart fix "$files"
+        just dart fix "$files"
     	if echo "$files" | grep -q '^cpp/obs/'; then
     		just obs fix
     	fi

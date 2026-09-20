@@ -76,7 +76,6 @@ asyncio.run(main())
    :nosignatures:
 
    BroadcastConsumer
-   RouteWatch
    TrackConsumer
    GroupConsumer
    MediaConsumer
@@ -98,14 +97,14 @@ asyncio.run(main())
    OriginProducer
    OriginConsumer
    OriginDynamic
-   Announced
+   AnnounceConsumer
    AnnouncedBroadcast
-   Announcement
+   AnnounceUpdate
 ```
 
 ## Data types
 
-These records and enums are re-exported from the native `moq_ffi` bindings; the
+These records, enums, and objects are re-exported from the native `moq_ffi` bindings; the
 wrapper surfaces them under `moq` unchanged. Their fields are defined on the
 Rust side ([`moq-ffi`](https://crates.io/crates/moq-ffi)).
 
@@ -157,6 +156,7 @@ Rust side ([`moq-ffi`](https://crates.io/crates/moq-ffi)).
    Error
    is_auth
    is_shutdown
+   protocol_error
    log_level
 ```
 

@@ -88,7 +88,7 @@ impl Rung {
 	}
 
 	fn container(&self) -> Result<moq_mux::catalog::hang::Container, Error> {
-		Ok(moq_mux::catalog::hang::Container::try_from(&self.config.container)?)
+		Ok(moq_mux::catalog::hang::Container::try_from(&self.config)?)
 	}
 
 	/// An encoder producing this rung's rendition.
@@ -130,7 +130,7 @@ pub(crate) async fn serve(rung: Rung, request: moq_net::track::Request) -> Resul
 	// Grab the group-request handle before accepting: a Request is dynamic from
 	// birth, so a fetch racing the acceptance queues instead of failing.
 	let dynamic = request.dynamic();
-	let info = hang::container::track_info();
+	let info = hang::container::track_info(hang::catalog::PRIORITY.video);
 	let mut producer = request.accept(info);
 	let (finished, mut finishing) = tokio::sync::watch::channel(false);
 
@@ -460,7 +460,7 @@ async fn fetches(
 fn spawn_fetch(
 	tasks: &mut tokio::task::JoinSet<()>,
 	rung: Rung,
-	request: moq_net::track::GroupRequest,
+	request: moq_net::group::Request,
 	permit: tokio::sync::OwnedSemaphorePermit,
 ) {
 	tasks.spawn(async move {
@@ -478,7 +478,7 @@ fn spawn_fetch(
 /// `GroupRequest` auto-rejects with [`moq_net::Error::Dropped`], which reads as
 /// "the handler vanished" and hides the actual decode/encode/source failure from
 /// the waiting consumer.
-async fn fetch(rung: Rung, request: moq_net::track::GroupRequest) -> Result<(), Error> {
+async fn fetch(rung: Rung, request: moq_net::group::Request) -> Result<(), Error> {
 	let options = moq_net::group::Fetch::default().with_priority(request.priority());
 	let mut source = match rung.source.fetch_group(request.sequence(), options).await {
 		Ok(source) => source,
@@ -728,7 +728,7 @@ mod tests {
 			name: "video/120p".to_string(),
 			height: 120,
 			size: moq_video::Size::new(160, 120),
-			bitrate: 100_000,
+			bitrate: moq_net::bandwidth::Rate::from_bps(100_000),
 			framerate: 30,
 		};
 
@@ -737,9 +737,9 @@ mod tests {
 		let mut cursor = active.consume();
 		let rendition = cursor.try_next().expect("ladder").rendition;
 
-		let mut broadcast = moq_net::broadcast::Info::default().produce();
-		let mut track = broadcast
-			.create_track("video/120p", hang::container::track_info())
+		let broadcast = moq_net::broadcast::Info::default().produce();
+		let track = broadcast
+			.create_track("video/120p", hang::container::track_info(hang::catalog::PRIORITY.video))
 			.unwrap();
 		let mut group = track.create_group(moq_net::group::Info { sequence: 0 }).unwrap();
 		let guard = active.attach(&rung);

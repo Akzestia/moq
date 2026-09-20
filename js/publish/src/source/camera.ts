@@ -5,7 +5,7 @@ import { Retry } from "./retry";
 
 // Signals the camera reads.
 export type CameraInput = {
-	// Whether to hold the camera open. When false the track is stopped and `out.source` clears.
+	// Whether to hold the camera open. Defaults to true. When false the track is stopped and `out.source` clears.
 	enabled: Getter<boolean>;
 };
 
@@ -54,7 +54,7 @@ export class Camera {
 
 	constructor(props?: CameraProps) {
 		this.in = {
-			enabled: getter(props?.enabled ?? false),
+			enabled: getter(props?.enabled ?? true),
 		};
 		this.device = new Device("video", props?.device);
 		this.constraints = Signal.from(props?.constraints);
@@ -113,7 +113,7 @@ export class Camera {
 
 			if (!stream) return this.#retry.failed();
 
-			const source = stream.getVideoTracks()[0] as Video.Source | undefined;
+			const source = stream.getVideoTracks()[0] as Video.StreamTrack | undefined;
 
 			// getUserMedia resolved, so we have permission even if no track came back.
 			effect.cleanup(this.device.capture(source?.getSettings().deviceId));

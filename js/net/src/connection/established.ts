@@ -5,7 +5,12 @@ import type * as Path from "../path.ts";
 import type { Probe, Stats } from "./stats.ts";
 import type { Transport } from "./transport.ts";
 
-/** An established MoQ session, implemented by both the moq-lite and moq-ietf protocols. */
+/**
+ * An established MoQ session, implemented by both the moq-lite and moq-ietf protocols.
+ *
+ * Publishing goes through an origin, not the session: pass an `Origin.Consumer` as the
+ * `publish` connect option and the session announces and serves that origin's broadcasts.
+ */
 export interface Established {
 	/** URL of the connected server. */
 	readonly url: URL;
@@ -29,11 +34,12 @@ export interface Established {
 	 */
 	readonly discovery: boolean;
 
-	/** Subscribe to broadcast announcements under an optional path prefix, returning paths relative to that prefix. */
-	announced(prefix?: Path.Valid): announce.Consumer;
-
-	/** Publish a broadcast at the given path. */
-	publish(path: Path.Valid, broadcast: broadcast.Producer): void;
+	/**
+	 * Subscribe to broadcast announcements matching `scope`, any pattern (`foo/**`
+	 * for a subtree, `room/* /chat` for each room's chat, default `**`). Paths are
+	 * relative to the session; captures report what the scope's wildcards stood for.
+	 */
+	announced(scope?: Path.Pattern): announce.Consumer;
 
 	/**
 	 * Consume the broadcast at the given path, immediately.
@@ -63,6 +69,10 @@ export interface Established {
 	/** Close the session. */
 	close(): void;
 
-	/** Resolves when the session closes. */
-	closed: Promise<void>;
+	/**
+	 * Resolves when the session closes: `null` for a clean close, a `SessionError` when the
+	 * peer closed with a code (e.g. `SessionCode.Unauthorized` for an auth rejection), or the
+	 * transport's own failure. Never rejects.
+	 */
+	closed: Promise<Error | null>;
 }

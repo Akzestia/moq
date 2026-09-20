@@ -12,6 +12,24 @@ use rubato::{
 
 use crate::Error;
 
+#[derive(Debug, thiserror::Error)]
+enum BackendError {
+	#[error(transparent)]
+	Construction(#[from] rubato::ResamplerConstructionError),
+
+	#[error(transparent)]
+	Process(#[from] rubato::ResampleError),
+}
+
+impl BackendError {
+	fn into_public(self) -> Error {
+		match self {
+			Self::Construction(err) => Error::ResamplerConstruction(err.to_string()),
+			Self::Process(err) => Error::Resample(err.to_string()),
+		}
+	}
+}
+
 /// Sample-rate converter over interleaved `f32` PCM.
 pub struct Resampler {
 	resampler: Async<f32>,
@@ -52,6 +70,10 @@ impl Resampler {
 			return Err(Error::Unsupported("chunk_frames must be > 0".into()));
 		}
 
+		Self::new_inner(input_rate, output_rate, channels, chunk_frames).map_err(BackendError::into_public)
+	}
+
+	fn new_inner(input_rate: u32, output_rate: u32, channels: u32, chunk_frames: usize) -> Result<Self, BackendError> {
 		let params = SincInterpolationParameters {
 			sinc_len: 128,
 			f_cutoff: Some(0.95),
@@ -188,7 +210,7 @@ impl Resampler {
 			// neither the output nor the skip, which cannot repeat.
 			let skip_before = self.skip;
 			self.pending.resize(self.chunk_frames * self.channels, 0.0);
-			let produced = self.convert()?;
+			let produced = self.convert().map_err(BackendError::into_public)?;
 			if produced.is_empty() && self.skip == skip_before {
 				break;
 			}
@@ -222,7 +244,7 @@ impl Resampler {
 		self.started |= !samples.is_empty();
 		self.pending.extend_from_slice(samples);
 		let buffered = self.pending.len();
-		let out = self.convert()?;
+		let out = self.convert().map_err(BackendError::into_public)?;
 
 		// Earlier calls leave less than one chunk, so consuming any chunk also
 		// consumes all their samples. The remainder belongs to this packet.
@@ -238,7 +260,7 @@ impl Resampler {
 	}
 
 	/// Convert every whole chunk that is buffered, keeping the remainder.
-	fn convert(&mut self) -> Result<Vec<f32>, Error> {
+	fn convert(&mut self) -> Result<Vec<f32>, BackendError> {
 		let chunk_samples = self.chunk_frames * self.channels;
 		let mut out = Vec::new();
 		while self.pending.len() >= chunk_samples {

@@ -5,7 +5,7 @@ const { Effect } = Moq.Signals;
 
 async function main() {
 	const url = new URL("https://cdn.moq.dev/anon");
-	const connection = new Moq.Connection.Reload({ url, enabled: true });
+	const connection = new Moq.Connection({ url });
 
 	// Wait for a broadcast that may not exist yet. `consume` would subscribe blind and get reset
 	// if nobody is publishing the path; this waits for the announcement instead.
@@ -34,8 +34,16 @@ async function main() {
 		});
 	});
 
-	// Run until interrupted. `closed` rejects if the reconnect loop gives up, so release
-	// everything on the way out either way.
+	// Attempt failures land on `error` instead of settling `closed`, so a JWT refresh
+	// can recover the same handle. This example logs and closes; replace `url` instead
+	// if the credentials can be renewed.
+	effect.run((effect) => {
+		const err = effect.get(connection.error);
+		if (!err) return;
+		console.error("connection failed:", err);
+		connection.close(err);
+	});
+
 	try {
 		await connection.closed;
 	} finally {

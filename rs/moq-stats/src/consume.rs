@@ -68,7 +68,10 @@ impl Consumer {
 
 	async fn subscribe<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<moq_json::snapshot::Consumer<T>> {
 		let track = self.broadcast.track(name)?.subscribe(None).await?;
-		let config = moq_json::snapshot::ConsumerConfig::default().with_compression(self.config.compression);
+		let mut config = moq_json::snapshot::consumer::Config::default();
+		if self.config.compression {
+			config.compression = moq_json::Compression::Deflate;
+		}
 		Ok(moq_json::snapshot::Consumer::new(track, config))
 	}
 }
@@ -101,16 +104,29 @@ impl SessionsConsumer {
 
 #[cfg(test)]
 mod tests {
+	/// Build an origin producer, spawning its driver on the ambient runtime.
+	fn produce_origin() -> moq_net::origin::Producer {
+		let (producer, driver) = moq_net::origin::Producer::new(moq_net::Hop::random().into());
+		if tokio::runtime::Handle::try_current().is_ok() {
+			tokio::spawn(driver.run(moq_tokio::runtime::Runtime::<()>::new()));
+		} else {
+			// A sync test: nothing polls the driver, and dropping it would tear
+			// the origin down, so leak it and rely on the synchronous half.
+			std::mem::forget(driver);
+		}
+		producer
+	}
+
 	use std::time::Duration;
 
-	use moq_net::{Consume, Origin, PathOwned, Timestamp, announce, broadcast, origin, track};
+	use moq_net::{Consume, PathOwned, Timestamp, announce, broadcast, origin, track};
 
 	use crate::{Producer, ProducerConfig, Tier};
 
 	use super::*;
 
 	fn test_producer() -> (Producer, origin::Producer) {
-		let origin = Origin::random().produce();
+		let origin = produce_origin();
 		let producer = Producer::new(
 			ProducerConfig::new()
 				.with_origin(origin.clone())
@@ -143,20 +159,17 @@ mod tests {
 
 	async fn feed(producer: &Producer, tier: Tier, root: &str, path: &str) -> Feed {
 		let ctx = producer.registry().tier(tier).session(root);
-		let feed_origin = Origin::random().produce();
+		let feed_origin = produce_origin();
 		let egress = feed_origin.consume().with_stats(ctx.clone());
 
 		let mut announced = egress.announced();
-		let mut source = feed_origin
-			.create_broadcast(path, broadcast::Route::announced())
-			.unwrap();
-		let track = source.create_track("video", None).unwrap();
+		let source = feed_origin.create_broadcast(path).unwrap();
+		source.announce(origin::Route::default()).unwrap();
+		let track = source.clone().create_track("video", None).unwrap();
 
-		tokio::time::sleep(Duration::from_millis(1)).await;
-		tokio::time::sleep(Duration::from_millis(1)).await;
-
-		let announce::Update { broadcast, .. } = announced.next().await.expect("announce");
-		let consumer = broadcast.expect("active");
+		let update = announced.next().await.expect("announce");
+		assert!(update.kind.is_active());
+		let consumer = egress.request_broadcast(path).await.expect("resolve");
 		let sub = consumer.track("video").unwrap().subscribe(None).await.unwrap();
 
 		Feed {
@@ -171,8 +184,13 @@ mod tests {
 	async fn announced(origin: &origin::Producer) -> moq_net::broadcast::Consumer {
 		let mut consumer = origin.consume().announced();
 		tokio::time::advance(Duration::from_millis(1)).await;
-		let announce::Update { broadcast, .. } = consumer.next().await.expect("expected announce");
-		broadcast.expect("active")
+		let update = consumer.next().await.expect("expected announce");
+		assert!(update.kind.is_active());
+		origin
+			.consume()
+			.request_broadcast(moq_net::Path::new(update.path.as_str()))
+			.await
+			.expect("resolve")
 	}
 
 	async fn drive_tick() {

@@ -13,6 +13,15 @@ use webm_iterable::matroska_spec::{Master, MatroskaSpec, SimpleBlock};
 
 use crate::container::test_util::{IDR, Live, PPS, SPS, raw_frame, video_frame};
 
+/// A drift budget no test timeline comes close to, so the exporter reads every group.
+///
+/// The media track's full retention window, so an exporter started after publishing
+/// can still read every retained group. These tests import a whole file and only then
+/// export it, which the exporter's default
+/// [`std::time::Duration::ZERO`](std::time::Duration::ZERO) collapses to the live edge:
+/// completeness has to be asked for, exactly as a real recorder does.
+const RECORDING_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[tokio::test(start_paused = true)]
 async fn export_header_roundtrip_vp9_opus() {
 	// Build a tiny synthetic WebM with one VP9 video track and one Opus audio track.
@@ -315,7 +324,7 @@ async fn export_derives_video_geometry_before_header() {
 	let mut live = Live::new(".vp8", |catalog, name| {
 		let mut config = VideoConfig::new(VideoCodec::VP8);
 		config.container = Container::Legacy;
-		catalog.lock().video.renditions.insert(name, config);
+		catalog.modify().unwrap().video.renditions.insert(name, config);
 	});
 	// Geometry-less startup frames must not park the source before the keyframe.
 	live.track.write(raw_frame(0, &[0x31, 0x00, 0x00], true)).unwrap();
@@ -367,7 +376,8 @@ async fn export_emits_blocks_for_each_frame() {
 	let mut exporter = crate::container::mkv::Export::new(crate::source::announced(&consumer), catalog_stream)
 		// Use per-frame clustering so each frame is observable as its own
 		// Cluster chunk; batching is exercised in a dedicated test below.
-		.with_fragment_duration(std::time::Duration::ZERO);
+		.with_fragment_duration(std::time::Duration::ZERO)
+		.with_max_age(RECORDING_MAX_AGE);
 	let mut exported: Vec<u8> = Vec::new();
 
 	let mut importer = Some(importer);
@@ -440,7 +450,7 @@ async fn export_rejects_cmaf_track() {
 		config.container = Container::Cmaf {
 			init: Bytes::from(vec![0u8; 32]),
 		};
-		catalog.lock().video.renditions.insert(name, config);
+		catalog.modify().unwrap().video.renditions.insert(name, config);
 	});
 
 	let mut exporter = crate::container::mkv::Export::new(live.source(), live.catalog_stream().await);
@@ -605,7 +615,8 @@ async fn export_fragment_duration_batches_blocks() {
 		.await
 		.expect("catalog consumer");
 	let mut exporter = crate::container::mkv::Export::new(crate::source::announced(&consumer), catalog_stream)
-		.with_fragment_duration(std::time::Duration::from_secs(2));
+		.with_fragment_duration(std::time::Duration::from_secs(2))
+		.with_max_age(RECORDING_MAX_AGE);
 	let mut exported: Vec<u8> = Vec::new();
 
 	let mut importer = Some(importer);

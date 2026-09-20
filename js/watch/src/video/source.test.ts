@@ -128,7 +128,11 @@ describe("Source error signal", () => {
 		source.close();
 	});
 
-	it("ignores escaping renditions before selecting a valid fallback", async () => {
+	// The catalog goes as a whole rather than losing the one rendition, so a valid sibling
+	// is no rescue: the reference names content outside the consumer's authorized subtree,
+	// and selecting the fallback would leave a publisher bug to surface later as a track
+	// that never fills.
+	it("selects nothing when an escaping rendition rejects the catalog", async () => {
 		const invalidVideo = { ...config("avc1.640028"), broadcast: "../../source" };
 		const validVideo = { ...config("avc1.640028"), broadcast: "./source" };
 		const audioConfig = Catalog.AudioConfigSchema.parse({
@@ -153,11 +157,16 @@ describe("Source error signal", () => {
 		});
 		const source = new Source({ broadcast, supported: async () => true });
 
-		await settle();
-		expect(Object.keys(broadcast.out.catalog.peek()?.video?.renditions ?? {})).toEqual(["fallback"]);
-		expect(Object.keys(broadcast.out.catalog.peek()?.audio?.renditions ?? {})).toEqual(["fallback"]);
-		expect(Object.keys(source.out.available.peek())).toEqual(["fallback"]);
-		expect(source.out.track.peek()).toBe("fallback");
+		const error = console.error;
+		console.error = () => {};
+		try {
+			await settle();
+			expect(broadcast.out.catalog.peek()).toBeUndefined();
+			expect(Object.keys(source.out.available.peek())).toEqual([]);
+			expect(source.out.track.peek()).toBeUndefined();
+		} finally {
+			console.error = error;
+		}
 
 		source.close();
 		broadcast.close();
@@ -165,6 +174,32 @@ describe("Source error signal", () => {
 });
 
 describe("Source stalled rendition selection", () => {
+	it("moves to an unstalled rendition when the selected one is throttled", async () => {
+		const state = mutableBroadcast({
+			low: config("avc1.64001e", { bitrate: 1_000_000 }),
+			high: config("avc1.640028", { bitrate: 2_000_000 }),
+		});
+		const source = new Source({
+			broadcast: state.broadcast,
+			supported: async () => true,
+		});
+
+		await settle();
+		expect(source.out.track.peek()).toBe("high");
+
+		state.catalog.set({
+			video: {
+				renditions: {
+					low: config("avc1.64001e", { bitrate: 1_000_000 }),
+					high: config("avc1.640028", { bitrate: 2_000_000, stalled: true }),
+				},
+			},
+		});
+		await settle();
+		expect(source.out.track.peek()).toBe("low");
+		source.close();
+	});
+
 	it("skips a stalled manual target while an unstalled rendition exists", async () => {
 		const source = new Source({
 			broadcast: mockBroadcast({

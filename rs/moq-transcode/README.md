@@ -56,8 +56,8 @@ undercuts a known source bitrate.
 
 ```rust
 config.ladder = moq_transcode::Ladder::new([
-    moq_transcode::Rung::new(720, 2_500_000),
-    moq_transcode::Rung::new(360, 600_000),
+    moq_transcode::Rung::new(720, moq_net::bandwidth::Rate::from_bps(2_500_000)),
+    moq_transcode::Rung::new(360, moq_net::bandwidth::Rate::from_bps(600_000)),
 ])?;
 ```
 
@@ -69,7 +69,7 @@ below which. Filtering against the source drops rungs but never reorders them.
 
 ## Example
 
-Publish something first (e.g. `moq publish camera` from
+Publish something first (e.g. `moq import capture` from
 [`moq-cli`](../moq-cli)), then:
 
 ```bash

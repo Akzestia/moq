@@ -60,4 +60,4 @@ reads the same release manifest so a release bumps both.
 - [C# through moq-ffi](/quest/m2/cs/README.md) - the same recipe with NordSecurity's C# generator
 - [Unreal prototype](/quest/m3/unreal.md) - a UE5 module consumes the package with exceptions disabled
 - [#2907](/quest/m2/2907-bind-the-browser-through-moq-ffi-uniffi-instead-of-a.md) - the browser reaches moq-ffi through a generator too; shares the Task-per-target findings
-- [#2152](/quest/m1/2152-libmoq-c-abi-catch-up-with-the-moq-ffi-surface.md) - libmoq stays the plain-C ABI; OBS leaving it removes the pressure to mirror codec symbols there
+- [#2152](/quest/m2/2152-libmoq-c-abi-catch-up-with-the-moq-ffi-surface.md) - libmoq stays the plain-C ABI; OBS leaving it removes the pressure to mirror codec symbols there

@@ -270,8 +270,8 @@ prepare_go() {
         cd "$src"
         export CGO_ENABLED=1 GOFLAGS=-mod=mod
         go mod edit \
-            -replace="github.com/moq-dev/moq-go=$wrapper_pkg" \
-            -replace="github.com/moq-dev/moq-go-ffi=$ffi_pkg"
+            -replace="moq.dev/moq=$wrapper_pkg" \
+            -replace="moq.dev/moq-ffi=$ffi_pkg"
         # Scratch copy is outside the git tree; stamping VCS info fails in a worktree.
         go build -buildvcs=false -o "$GO_SMOKE" .
     ) >"$HARNESS_RUN/go-build.log" 2>&1; then
@@ -419,7 +419,7 @@ run_publisher() {
     local lang="$1" broadcast="$2"
     case "$lang" in
         rust)
-            ffmpeg_h264 | "$MOQ" --client-connect "$URL" --broadcast "$broadcast" import avc3
+            ffmpeg_h264 | "$MOQ" --connect "$URL" --broadcast "$broadcast" import avc3
             ;;
         python)
             ffmpeg_h264 | "$PY" "$CLIENTS/python/smoke.py" \
@@ -470,7 +470,7 @@ run_subscriber() {
             # moq-cli only handles SIGINT, so -k forces SIGKILL if it ignores the
             # SIGTERM that fires when no data arrives within the timeout.
             local n
-            n=$(timeout -k 3 "$TIMEOUT" "$MOQ" --client-connect "$URL" --broadcast "$broadcast" \
+            n=$(timeout -k 3 "$TIMEOUT" "$MOQ" --connect "$URL" --broadcast "$broadcast" \
                 export fmp4 | head -c 1 | wc -c | tr -d ' ' || true)
             [[ "${n:-0}" -ge 1 ]]
             ;;

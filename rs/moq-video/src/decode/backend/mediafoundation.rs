@@ -456,6 +456,9 @@ impl Backend for MediaFoundation {
 			}
 		}
 		self.discontinuity = false;
+		// Read the stamp before the call: arguments evaluate left to right, so
+		// `&mut self.pending` would still hold the borrow when `sample_time`
+		// wants `&self`.
 		let sample_time = self.sample_time();
 		remember_timestamp(&mut self.pending, sample_time, timestamp);
 		self.sample_index += 1;

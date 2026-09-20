@@ -14,14 +14,21 @@ async function flush() {
 test("room restores the announce prefix and reconciles local identity changes", async () => {
 	const streams: Net.Announce.Producer[] = [];
 	const connection = {
-		established: new Signal(undefined),
-		announced(prefix: Net.Path.Valid) {
-			const stream = new Net.Announce.Producer(prefix);
-			streams.push(stream);
-			stream.append({ path: Net.Path.from("bob/camera.hang"), active: true });
-			return stream.consume();
-		},
-	} as unknown as Net.Connection.Reload;
+		origin: new Signal({
+			announced(scope: Net.Path.Pattern) {
+				expect(scope.equals(Net.Path.Pattern.subtree(Net.Path.from("room-a")))).toBe(true);
+				const stream = new Net.Announce.Producer();
+				streams.push(stream);
+				stream.append({
+					path: Net.Path.from("room-a/bob/camera.hang"),
+					captures: [Net.Path.Pattern.literal(Net.Path.from("bob/camera.hang"))],
+					kind: "announced",
+					route: { hops: [], cost: { warm: 0n, cold: 0n } },
+				});
+				return stream.consume();
+			},
+		}),
+	} as unknown as Net.Connection;
 	const attach = spyOn(Remote.prototype, "attach").mockImplementation(() => {});
 	const identity = new Signal(Net.Path.from("alice"));
 	const room = new Room({ connection, identity, prefix: Net.Path.from("room-a") });

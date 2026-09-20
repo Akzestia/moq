@@ -3,6 +3,7 @@
 use hang::catalog::{AudioCodec, VideoCodec};
 
 use super::Import;
+use std::time::Duration;
 
 /// A minimal `AVCDecoderConfigurationRecord`: AVC-LC baseline (profile 0x42,
 /// level 0x1f) with one SPS and one PPS.
@@ -88,9 +89,10 @@ fn synth_flv() -> Vec<u8> {
 
 /// A rendition must never be advertised when its media producer could not be built.
 ///
-/// `media_producer` is fallible (it mints the rendition's `<name>.timeline.z` track, which can
-/// collide), so publishing the catalog entry first would leave consumers a rendition that is
-/// announced but has no producer behind it and is therefore never served.
+/// `media_producer` is fallible (it enrolls the track in the broadcast timeline, minting the
+/// shared `timeline.z` track, which can collide), so publishing the catalog entry first would
+/// leave consumers a rendition that is announced but has no producer behind it and is therefore
+/// never served.
 #[tokio::test(start_paused = true)]
 async fn rendition_is_not_published_when_the_media_producer_fails() {
 	let data = synth_flv();
@@ -112,10 +114,10 @@ async fn rendition_is_not_published_when_the_media_producer_fails() {
 	let mut broadcast = moq_net::broadcast::Info::new().produce();
 	let catalog = crate::catalog::Producer::new(&mut broadcast).unwrap();
 
-	// Squat the timeline track the video rendition will want, so building its media producer
-	// fails. `unique_name` is deterministic, so this is the name it will pick. The handle must
-	// stay alive: the broadcast tracks names weakly, so dropping it frees the name.
-	let _squat = broadcast.create_track("0.flv-v.timeline.z", None).unwrap();
+	// Squat the broadcast's timeline track, so enrolling the first rendition (and with it building
+	// its media producer) fails. The handle must stay alive: the broadcast tracks names weakly, so
+	// dropping it frees the name.
+	let _squat = broadcast.create_track(hang::timeline::DEFAULT_NAME, None).unwrap();
 
 	let mut importer = Import::new(broadcast, catalog.reserve());
 	// A track it cannot build surfaces in the catalog rather than in this result.
@@ -167,9 +169,16 @@ async fn import_emits_frames() {
 	let video_name = snap.video.renditions.keys().next().unwrap().clone();
 
 	// Decode the video track back through the Legacy container.
-	let track = consumer.track(&video_name).unwrap().subscribe(None).await.unwrap();
-	let mut decoder = crate::container::Consumer::new(track, crate::catalog::hang::Container::Legacy)
-		.with_latency(std::time::Duration::from_secs(1));
+	let track = consumer
+		.track(&video_name)
+		.unwrap()
+		.subscribe(moq_net::track::Subscription::default().with_max_age(Duration::from_secs(1)))
+		.await
+		.unwrap();
+	let mut decoder = crate::container::Consumer::new(
+		track,
+		crate::catalog::hang::Container::Legacy(crate::container::Kind::Data),
+	);
 	let frame = decoder.read().await.unwrap().expect("a video frame");
 	assert!(frame.keyframe);
 	// The payload is the length-prefixed NALU, carried through verbatim.
@@ -192,7 +201,10 @@ async fn public_container_preserves_loc_for_flv() {
 	assert_eq!(config.container, hang::catalog::Container::Loc);
 
 	let track = consumer.track(name).unwrap().subscribe(None).await.unwrap();
-	let mut media = crate::container::Consumer::new(track, crate::catalog::hang::Container::Loc);
+	let mut media = crate::container::Consumer::new(
+		track,
+		crate::catalog::hang::Container::Loc(crate::container::Kind::Data),
+	);
 	let frame = tokio::time::timeout(std::time::Duration::from_secs(1), media.read())
 		.await
 		.unwrap()
@@ -479,9 +491,16 @@ async fn import_enhanced_av1() {
 	assert!(matches!(v.codec, VideoCodec::AV1(_)));
 	assert_eq!(v.description.as_ref().map(|b| b.as_ref()), Some(&AV1C[..]));
 
-	let track = consumer.track(name).unwrap().subscribe(None).await.unwrap();
-	let mut decoder = crate::container::Consumer::new(track, crate::catalog::hang::Container::Legacy)
-		.with_latency(std::time::Duration::from_secs(1));
+	let track = consumer
+		.track(name)
+		.unwrap()
+		.subscribe(moq_net::track::Subscription::default().with_max_age(Duration::from_secs(1)))
+		.await
+		.unwrap();
+	let mut decoder = crate::container::Consumer::new(
+		track,
+		crate::catalog::hang::Container::Legacy(crate::container::Kind::Data),
+	);
 	let frame = decoder.read().await.unwrap().expect("an AV1 frame");
 	assert!(frame.keyframe);
 	assert_eq!(frame.payload.as_ref(), payload);
@@ -582,9 +601,16 @@ async fn import_reports_negative_pts_and_can_resume() {
 
 	let snap = catalog.snapshot();
 	let name = snap.video.renditions.keys().next().unwrap();
-	let track = consumer.track(name).unwrap().subscribe(None).await.unwrap();
-	let mut decoder = crate::container::Consumer::new(track, crate::catalog::hang::Container::Legacy)
-		.with_latency(std::time::Duration::from_secs(1));
+	let track = consumer
+		.track(name)
+		.unwrap()
+		.subscribe(moq_net::track::Subscription::default().with_max_age(Duration::from_secs(1)))
+		.await
+		.unwrap();
+	let mut decoder = crate::container::Consumer::new(
+		track,
+		crate::catalog::hang::Container::Legacy(crate::container::Kind::Data),
+	);
 	let frame = decoder.read().await.unwrap().expect("the good frame");
 	assert_eq!(frame.timestamp.as_millis(), 10);
 }
@@ -615,9 +641,16 @@ async fn import_enhanced_hvc1_applies_composition_time() {
 
 	let snap = catalog.snapshot();
 	let name = snap.video.renditions.keys().next().unwrap();
-	let track = consumer.track(name).unwrap().subscribe(None).await.unwrap();
-	let mut decoder = crate::container::Consumer::new(track, crate::catalog::hang::Container::Legacy)
-		.with_latency(std::time::Duration::from_secs(1));
+	let track = consumer
+		.track(name)
+		.unwrap()
+		.subscribe(moq_net::track::Subscription::default().with_max_age(Duration::from_secs(1)))
+		.await
+		.unwrap();
+	let mut decoder = crate::container::Consumer::new(
+		track,
+		crate::catalog::hang::Container::Legacy(crate::container::Kind::Data),
+	);
 	let frame = decoder.read().await.unwrap().expect("a video frame");
 	assert_eq!(frame.timestamp.as_millis(), 17);
 }

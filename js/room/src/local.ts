@@ -10,12 +10,10 @@ import { Effect, type Getter, type GetterInit, getter, Signal } from "@moq/signa
 import { type Preview, serve, type UserProps, userFields } from "./metadata.ts";
 import { broadcastPath, KIND } from "./path.ts";
 
-type Established = Moq.Connection.Established;
-
 /** Constructor options for {@link Local}. */
 export interface LocalProps {
-	/** Live session, usually a `Connection.Reload`'s `established`. */
-	connection: GetterInit<Established | undefined>;
+	/** Origin to publish into, usually a `Connection`'s `origin`. */
+	origin: GetterInit<Moq.Origin.Table | undefined>;
 	/** Participant identity; broadcast names are `{identity}/camera.hang` and `{identity}/screen.hang`. */
 	identity: GetterInit<Moq.Path.Valid>;
 	/** When true, announce the camera broadcast (joining the room). Defaults to false. */
@@ -75,6 +73,10 @@ export class Local {
 	readonly cameraCapture: Publish.Video.Capture;
 	/** Shared capture feeding the screen renditions. */
 	readonly screenCapture: Publish.Video.Capture;
+	/** Shared capture feeding the camera microphone encoder. */
+	readonly cameraAudioCapture: Publish.Audio.Capture;
+	/** Shared capture feeding the screen audio encoder. */
+	readonly screenAudioCapture: Publish.Audio.Capture;
 
 	/** Camera HD encoder. */
 	readonly cameraHd: Publish.Video.Encoder;
@@ -107,7 +109,7 @@ export class Local {
 		this.chatting = new Signal(false);
 		this.user = userFields(props.user);
 
-		const connection = getter(props.connection);
+		const origin = getter(props.origin);
 
 		this.webcam = new Publish.Source.Camera({
 			enabled: this.cameraEnabled,
@@ -162,7 +164,7 @@ export class Local {
 		});
 
 		this.camera = new Publish.Broadcast({
-			connection,
+			origin,
 			enabled: this.enabled,
 			name: cameraName,
 			display: this.cameraCapture.out.display,
@@ -171,7 +173,7 @@ export class Local {
 		this.#signals.cleanup(() => this.camera.close());
 
 		this.screen = new Publish.Broadcast({
-			connection,
+			origin,
 			enabled: this.#screenLive,
 			name: screenName,
 			display: this.screenCapture.out.display,
@@ -194,9 +196,15 @@ export class Local {
 		});
 		this.#signals.cleanup(() => this.cameraSd.close());
 
+		this.cameraAudioCapture = new Publish.Audio.Capture({
+			source: this.microphone.out.source,
+			enabled: this.microphoneEnabled,
+		});
+		this.#signals.cleanup(() => this.cameraAudioCapture.close());
+
 		this.cameraAudio = new Publish.Audio.Encoder("audio", {
 			broadcast: this.camera,
-			source: this.microphone.out.source,
+			capture: this.cameraAudioCapture,
 			enabled: this.microphoneEnabled,
 		});
 		this.#signals.cleanup(() => this.cameraAudio.close());
@@ -217,9 +225,15 @@ export class Local {
 		});
 		this.#signals.cleanup(() => this.screenSd.close());
 
+		this.screenAudioCapture = new Publish.Audio.Capture({
+			source: this.#screenAudioSource,
+			enabled: this.#screenLive,
+		});
+		this.#signals.cleanup(() => this.screenAudioCapture.close());
+
 		this.screenAudio = new Publish.Audio.Encoder("audio", {
 			broadcast: this.screen,
-			source: this.#screenAudioSource,
+			capture: this.screenAudioCapture,
 			enabled: this.#screenLive,
 		});
 		this.#signals.cleanup(() => this.screenAudio.close());

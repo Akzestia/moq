@@ -43,7 +43,7 @@ dependency.
   under `acme.dir`, and the existing `notify` file watcher swaps it in on the
   next handshake, so no new `moq-tokio` surface is needed and per-worker
   rotation rides
-  [TLS rotation atomicity](/quest/m1/2924-moq-relay-tls-rotation-is-not-atomic-across-thread-per.md).
+  [TLS rotation atomicity](/quest/m2/2924-moq-relay-tls-rotation-is-not-atomic-across-thread-per.md).
   One file is what makes the rotation atomic: the watcher reloads both paths
   on every event and refuses a mismatched pair, so separate key and chain
   files would open a window where a new chain meets the old key, and a
@@ -56,10 +56,9 @@ dependency.
   owner-only (`0600`, the mode `doc/bin/relay/auth.md` already requires of
   private keys) before any bytes land, never with the umask default, and a
   missing `acme.dir` is created `0700`, so a group-searchable parent cannot
-  leak a key to another local user. Only the quinn and noq backends on the tokio
-  runtime reload certificates today: quiche snapshots its TLS material when
-  the listener is built, and the io_uring workers read the certificate once at
-  bind. Config validation refuses `[acme]` with those until they can rotate,
+  leak a key to another local user. Only the tokio
+  runtime reloads certificates today: the io_uring workers read the
+  certificate once at bind. Config validation refuses `[acme]` with those until they can rotate,
   rather than letting a relay serve an expired certificate; lifting the
   refusal is part of whatever gives them a reload path.
 - **Startup.** With no usable cached certificate, bind `web.http` first and
@@ -107,7 +106,7 @@ startup, an unreachable directory fails the first start inside the budget
 with an actionable error, a restart with an expired cached certificate blocks
 and reissues rather than serving it, a transient renewal error retries within
 the attempt and a non-retryable response stops it early, a certificate near
-expiry renews and both the quinn and noq listeners serve the new chain through
+expiry renews and the listener serves the new chain through
 a fresh handshake without restart (the `web.https` reload is a separate test),
 a renewal failure leaves the old certificate serving, a reload of a
 half-written pair keeps the old one, both generated keys are mode `0600` after
@@ -117,7 +116,7 @@ reload.
 
 ## Required
 
-- [TLS rotation atomicity](/quest/m1/2924-moq-relay-tls-rotation-is-not-atomic-across-thread-per.md) - every supported worker must share one reloadable identity before ACME can promise renewal
+- [TLS rotation atomicity](/quest/m2/2924-moq-relay-tls-rotation-is-not-atomic-across-thread-per.md) - every supported worker must share one reloadable identity before ACME can promise renewal
 
 ## Closes
 

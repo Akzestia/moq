@@ -3,16 +3,34 @@ import XCTest
 @testable import Moq
 
 final class SmokeTests: XCTestCase {
+    func testStreamAbortPreservesProtocolDetails() async throws {
+        let broadcast = try BroadcastProducer()
+        let track = try broadcast.publishTrack(name: "errors")
+        let producer = try track.appendGroup()
+        let consumer = try broadcast.consume()
+        let group = try await consumer.fetchGroup(name: "errors", sequence: 0)
+        try producer.abort(errorCode: 404)
+        do {
+            _ = try await group.readFrame()
+            XCTFail("expected a protocol error")
+        } catch let error as MoqError {
+            let details = try XCTUnwrap(error.protocolError)
+            XCTAssertEqual(details.scope, .stream)
+            XCTAssertEqual(details.code, 468)
+            XCTAssertEqual(details.kind, .app)
+        }
+    }
+
     /// Verifies the native lib loads and the wrapper compiles against the
     /// generated API. No network needed: we just instantiate a few types and
     /// exercise the cancel path.
     func testClientConstructsAndCancels() async throws {
         let client = Client()
-        client.setTlsRoots([])
-        client.setTlsSystemRoots(true)
-        client.setTlsFingerprints([])
-        client.setTlsCert(nil)
-        client.setTlsKey(nil)
+        try client.setTlsRoots([])
+        try client.setTlsSystemRoots(true)
+        try client.setTlsFingerprints([])
+        try client.setTlsCert(nil)
+        try client.setTlsKey(nil)
         client.cancel()
         do {
             _ = try await client.connect(to: "https://localhost:0/test")
@@ -31,11 +49,44 @@ final class SmokeTests: XCTestCase {
         }
     }
 
-    func testOriginProducerIsConstructible() {
+    func testOriginProducerIsConstructible() throws {
         let origin = OriginProducer(cacheCapacityBytes: 4096)
         _ = origin.consume()
-        _ = origin.dynamic()
+        _ = try origin.dynamic(prefix: "")
     }
+
+    func testAnnounceThenUnannounceIsVisible() async throws {
+        let origin = OriginProducer()
+        let broadcast = try origin.createBroadcast(path: "live")
+        _ = try broadcast.publishTrack(name: "events")
+        try broadcast.announce()
+
+        let announced = try origin.consume().announced(prefix: "")
+        let first = try await announced.next()
+        XCTAssertEqual(first?.path, "live")
+        XCTAssertEqual(first?.active, true)
+
+        try broadcast.unannounce()
+        let retracted = try await announced.next()
+        XCTAssertEqual(retracted?.path, "live")
+        XCTAssertEqual(retracted?.active, false)
+        _ = try await origin.consume().requestBroadcast(path: "live")
+    }
+
+    func testDynamicServesARequestUnderAPrefix() async throws {
+        let origin = OriginProducer()
+        let dynamic = try origin.dynamic(prefix: "live")
+        let pending = Task {
+            try await origin.consume().requestBroadcast(path: "live/cam")
+        }
+        let request = try await dynamic.requestedBroadcast()
+        XCTAssertEqual(try request.path, "live/cam")
+        let served = try BroadcastProducer()
+        try request.accept(broadcast: served)
+        _ = try await pending.value
+        dynamic.cancel()
+    }
+
 
     func testBroadcastProducerOpensTracks() throws {
         let broadcast = try BroadcastProducer()
@@ -53,7 +104,7 @@ final class SmokeTests: XCTestCase {
             framerate: 60,
             optimizeForLatency: true
         )
-        let media = try broadcast.publishMedia(format: "avc3", video: hint)
+        let media = try broadcast.publishVideo(format: .avc3, hint: hint)
         try media.finish()
         try broadcast.finish()
     }
@@ -156,6 +207,23 @@ final class SmokeTests: XCTestCase {
         try broadcast.finish()
     }
 
+    func testReadFrameSkipsEmptyThenPopulatedGroups() async throws {
+        let broadcast = try BroadcastProducer()
+        let track = try broadcast.publishTrack(name: "status")
+        let consumer = try track.consume()
+
+        try track.appendGroup().finish()
+        try track.appendGroup().finish()
+        try track.writeFrame(Data("populated".utf8), timestampUs: 2_000)
+
+        let frame = try await consumer.readFrame()
+        XCTAssertEqual(frame?.payload, Data("populated".utf8))
+        XCTAssertEqual(frame?.timestampUs, 2_000)
+
+        try track.finish()
+        try broadcast.finish()
+    }
+
     func testSparseGroupsAndKnownEnd() throws {
         let broadcast = try BroadcastProducer()
         let track = try broadcast.publishTrack(name: "sparse")
@@ -168,5 +236,40 @@ final class SmokeTests: XCTestCase {
         XCTAssertThrowsError(try track.createGroup(sequence: 5))
         try track.finish()
         try broadcast.finish()
+    }
+
+    func testEncodeAudioWithOpusObject() throws {
+        // The config retains the codec, so releasing either first must still encode.
+        let input = AudioEncoderInput(format: .f32, sampleRate: 48_000, channels: 1)
+        let silence = AudioFrame(timestampUs: 0, data: Data(count: 960 * 4))
+
+        // Release the codec before encoding: `output` retains it.
+        do {
+            let broadcast = try BroadcastProducer()
+            var output: AudioEncoderOutput!
+            do {
+                let codec = AudioCodec.opus()
+                output = AudioEncoderOutput(codec: codec)
+            }
+            let producer = try broadcast.encodeAudio(name: "mic", input: input, output: output)
+            try producer.write(silence)
+            XCTAssertEqual(try producer.name, "mic")
+            try producer.finish()
+            try broadcast.finish()
+        }
+
+        // Release the config before finishing: the producer retains what it needs.
+        do {
+            let broadcast = try BroadcastProducer()
+            let producer: AudioProducer
+            do {
+                let codec = AudioCodec.opus()
+                let output = AudioEncoderOutput(codec: codec)
+                producer = try broadcast.encodeAudio(name: "mic", input: input, output: output)
+            }
+            try producer.write(silence)
+            try producer.finish()
+            try broadcast.finish()
+        }
     }
 }

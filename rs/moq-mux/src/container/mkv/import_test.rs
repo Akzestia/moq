@@ -259,7 +259,10 @@ async fn public_container_preserves_loc_for_mkv() {
 	assert_eq!(config.container, Container::Loc);
 
 	let track = consumer.track(name).unwrap().subscribe(None).await.unwrap();
-	let mut media = crate::container::Consumer::new(track, crate::catalog::hang::Container::Loc);
+	let mut media = crate::container::Consumer::new(
+		track,
+		crate::catalog::hang::Container::Loc(crate::container::Kind::Data),
+	);
 	let frame = tokio::time::timeout(std::time::Duration::from_secs(1), media.read())
 		.await
 		.unwrap()
@@ -410,9 +413,10 @@ fn test_block_timestamp_scaling() {
 
 /// A rendition must never be advertised when its media producer could not be built.
 ///
-/// `media_producer` is fallible (it mints the rendition's `<name>.timeline.z` track, which can
-/// collide), so publishing the catalog entry first would leave consumers a rendition that is
-/// announced but has no producer behind it and is therefore never served.
+/// `media_producer` is fallible (it enrolls the track in the broadcast timeline, minting the
+/// shared `timeline.z` track, which can collide), so publishing the catalog entry first would
+/// leave consumers a rendition that is announced but has no producer behind it and is therefore
+/// never served.
 #[test]
 fn rendition_is_not_published_when_the_media_producer_fails() {
 	let data = MkvBuilder::new()
@@ -430,10 +434,10 @@ fn rendition_is_not_published_when_the_media_producer_fails() {
 	let mut broadcast = moq_net::broadcast::Info::new().produce();
 	let catalog = crate::catalog::Producer::new(&mut broadcast).unwrap();
 
-	// Squat the timeline track the first video rendition will want, so building its media
-	// producer fails. `unique_name` is deterministic, so this is the name it will pick. The
-	// handle must stay alive: the broadcast tracks names weakly, so dropping it frees the name.
-	let _squat = broadcast.create_track("0.mkv-v.timeline.z", None).unwrap();
+	// Squat the broadcast's timeline track, so building the media producer (which creates it
+	// on first use) fails. The handle must stay alive: the broadcast tracks names weakly, so
+	// dropping it frees the name.
+	let _squat = broadcast.create_track(hang::timeline::DEFAULT_NAME, None).unwrap();
 
 	let mut mkv = crate::container::mkv::Import::new(broadcast, catalog.reserve());
 	let buf = bytes::BytesMut::from(&data[..]);

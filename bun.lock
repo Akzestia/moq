@@ -72,6 +72,40 @@
         "yaml": "^2.9.0",
       },
     },
+    "js/auth": {
+      "name": "@moq/auth",
+      "version": "0.1.0",
+      "bin": {
+        "moq-auth": "./src/cli.ts",
+      },
+      "dependencies": {
+        "@hexagon/base64": "^2.0.4",
+        "@moq/pattern": "workspace:^",
+        "@zod/mini": "^4.5.4",
+        "commander": "^15.0.0",
+        "jose": "^6.2.12",
+        "zod": "^4.5.4",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.4.1",
+        "@types/node": "^26.4.1",
+        "rimraf": "^6.1.3",
+        "typescript": "7.0.2",
+      },
+    },
+    "js/binary": {
+      "name": "@moq/binary",
+      "version": "0.1.0",
+      "dependencies": {
+        "@moq/flate": "workspace:^",
+        "@moq/net": "workspace:^",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "rimraf": "^6.1.3",
+        "typescript": "7.0.2",
+      },
+    },
     "js/clock": {
       "name": "@moq/clock",
       "version": "0.1.0",
@@ -193,6 +227,7 @@
       "name": "@moq/net",
       "version": "0.3.5",
       "dependencies": {
+        "@moq/pattern": "workspace:^",
         "@moq/qmux": "^0.3.3",
         "@moq/signals": "workspace:*",
         "async-mutex": "^0.5.0",
@@ -211,6 +246,15 @@
         "zod": "^4.5.0",
       },
     },
+    "js/pattern": {
+      "name": "@moq/pattern",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.0",
+        "rimraf": "^6.1.3",
+        "typescript": "7.0.2",
+      },
+    },
     "js/publish": {
       "name": "@moq/publish",
       "version": "0.4.7",
@@ -219,6 +263,7 @@
         "@moq/json": "workspace:^",
         "@moq/net": "workspace:^",
         "@moq/signals": "workspace:^",
+        "mediabunny": "^1.51.0",
       },
       "devDependencies": {
         "@types/audioworklet": "^0.0.100",
@@ -272,26 +317,6 @@
         "solid-js",
       ],
     },
-    "js/token": {
-      "name": "@moq/token",
-      "version": "0.3.3",
-      "bin": {
-        "moq-token": "./src/cli.ts",
-      },
-      "dependencies": {
-        "@hexagon/base64": "^2.0.4",
-        "@zod/mini": "^4.5.4",
-        "commander": "^15.0.0",
-        "jose": "^6.2.12",
-        "zod": "^4.5.4",
-      },
-      "devDependencies": {
-        "@types/bun": "^1.4.1",
-        "@types/node": "^26.4.1",
-        "rimraf": "^6.1.3",
-        "typescript": "7.0.2",
-      },
-    },
     "js/wasm": {
       "name": "@moq/wasm",
       "version": "0.0.0",
@@ -305,6 +330,7 @@
         "@moq/msf": "workspace:^",
         "@moq/net": "workspace:^",
         "@moq/signals": "workspace:^",
+        "media-captions": "0.0.18",
       },
       "devDependencies": {
         "@types/audioworklet": "^0.0.100",
@@ -613,6 +639,10 @@
 
     "@libav.js/variant-opus-af": ["@libav.js/variant-opus-af@6.10.9", "", {}, "sha512-yULJUCQIHDtwDPbT38t9pP/7EGgqwynVcOau46hZjtCe8TWMp67DTi2X0Emr2M4Ci3nzxNPf25IzO+IXSmHDBg=="],
 
+    "@moq/auth": ["@moq/auth@workspace:js/auth"],
+
+    "@moq/binary": ["@moq/binary@workspace:js/binary"],
+
     "@moq/boy": ["@moq/boy@workspace:js/moq-boy"],
 
     "@moq/clock": ["@moq/clock@workspace:js/clock"],
@@ -633,6 +663,8 @@
 
     "@moq/net": ["@moq/net@workspace:js/net"],
 
+    "@moq/pattern": ["@moq/pattern@workspace:js/pattern"],
+
     "@moq/publish": ["@moq/publish@workspace:js/publish"],
 
     "@moq/qmux": ["@moq/qmux@0.3.3", "", { "dependencies": { "@moq/web-socket-stream": "^0.1.1" } }, "sha512-Ez1GCVwpyNGB0eWvhKIXOjXrfRlMdmO0lpJ7gqInZFzsOsYTyML0WRgh24Itczp9Kev0CXsUA/K+XrGs1dRKUA=="],
@@ -644,8 +676,6 @@
     "@moq/smoke-browser": ["@moq/smoke-browser@workspace:test/smoke/clients/js"],
 
     "@moq/smoke-native": ["@moq/smoke-native@workspace:test/smoke/clients/js-native"],
-
-    "@moq/token": ["@moq/token@workspace:js/token"],
 
     "@moq/wasm": ["@moq/wasm@workspace:js/wasm"],
 
@@ -852,6 +882,10 @@
     "@types/concat-stream": ["@types/concat-stream@2.0.3", "", { "dependencies": { "@types/node": "*" } }, "sha512-3qe4oQAPNwVNwK4C9c8u+VJqv9kez+2MR4qJpoPFfXtgxxif1QbFusvXzK0/Wra2VX07smostI2VMmJNSpZjuQ=="],
 
     "@types/debug": ["@types/debug@4.1.13", "", { "dependencies": { "@types/ms": "*" } }, "sha512-KSVgmQmzMwPlmtljOomayoR89W4FynCAi3E8PPs7vmDVPe84hT+vGPKkJfThkmXs0x0jAaa9U8uW8bbfyS2fWw=="],
+
+    "@types/dom-mediacapture-transform": ["@types/dom-mediacapture-transform@0.1.12", "", { "dependencies": { "@types/dom-webcodecs": "*" } }, "sha512-d7/QsLRwF864A5mgIM/YrfiglHoYn7zgCcAoJgW404r+2DwnNr7EBbLnCWpmOMgH8y0te73L1AV6H1bmauaWFw=="],
+
+    "@types/dom-webcodecs": ["@types/dom-webcodecs@0.1.13", "", {}, "sha512-O5hkiFIcjjszPIYyUSyvScyvrBoV3NOEEZx/pMlsu44TKzWNkLVBBxnxJz42in5n3QIolYOcBYFCPZZ0h8SkwQ=="],
 
     "@types/estree": ["@types/estree@1.0.9", "", {}, "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg=="],
 
@@ -1362,6 +1396,10 @@
     "mdast-util-to-markdown": ["mdast-util-to-markdown@2.1.2", "", { "dependencies": { "@types/mdast": "^4.0.0", "@types/unist": "^3.0.0", "longest-streak": "^3.0.0", "mdast-util-phrasing": "^4.0.0", "mdast-util-to-string": "^4.0.0", "micromark-util-classify-character": "^2.0.0", "micromark-util-decode-string": "^2.0.0", "unist-util-visit": "^5.0.0", "zwitch": "^2.0.0" } }, "sha512-xj68wMTvGXVOKonmog6LwyJKrYXZPvlwabaryTjLh9LuvovB/KAH+kvi8Gjj+7rJjsFi23nkUxRQv1KqSroMqA=="],
 
     "mdast-util-to-string": ["mdast-util-to-string@4.0.0", "", { "dependencies": { "@types/mdast": "^4.0.0" } }, "sha512-0H44vDimn51F0YwvxSJSm0eCDOJTRlmN0R1yBh4HLj9wiV1Dn0QoXGbvFAWj2hSItVTlCmBF1hqKlIyUBVFLPg=="],
+
+    "media-captions": ["media-captions@0.0.18", "", {}, "sha512-JW18P6FuHdyLSGwC4TQ0kF3WdNj/+wMw2cKOb8BnmY6vSJGtnwJ+vkYj+IjHOV34j3XMc70HDeB/QYKR7E7fuQ=="],
+
+    "mediabunny": ["mediabunny@1.54.0", "", { "dependencies": { "@types/dom-mediacapture-transform": "^0.1.11", "@types/dom-webcodecs": "0.1.13" } }, "sha512-L7yaV6iS6SYtHAs0FPQsAy1fprwvoX39WqbAD7GaCQVXKj/7zwxlAQkCkL2K52XakuDES8lbRRNpUlGWUOnv8Q=="],
 
     "mdurl": ["mdurl@2.1.0", "", {}, "sha512-1+HBaOx0zi/dQWht8rNv9MYf9qqpqL/kxI0hXImU6Y547zM6Sni8BQibt7ifgMcYtQg41ao3Ivd6cnSM86inpg=="],
 

@@ -97,7 +97,7 @@ impl Nvenc {
 		cfg.gopLength = config.gop;
 		cfg.frameIntervalP = 1; // no B-frames
 		cfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_MODE::NV_ENC_PARAMS_RC_CBR;
-		let bitrate = config.resolved_bitrate().min(u32::MAX as u64) as u32;
+		let bitrate = config.resolved_bitrate().as_bps().min(u32::MAX as u64) as u32;
 		cfg.rcParams.averageBitRate = bitrate;
 		// A single-frame VBV, NVIDIA's own low-latency recipe. The preset's default
 		// buffer is about a second of bitrate, and CBR spends it on every IDR: a
@@ -639,7 +639,7 @@ mod tests {
 		let (w, h) = (1280u32, 720u32);
 		let mut config = crate::encode::Config::new(w, h, 30);
 		config.kind = crate::encode::Kind::Named(NAME.into());
-		config.bitrate = Some(4_000_000);
+		config.bitrate = Some(moq_net::bandwidth::Rate::from_bps(4_000_000));
 		config.gop = 30;
 		let mut encoder = crate::encode::Encoder::new(&config).ok()?;
 

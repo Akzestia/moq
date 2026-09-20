@@ -3,6 +3,8 @@ import * as broadcast from "../broadcast.ts";
 import { BroadcastCache } from "../consume.ts";
 import { error, ProtocolViolation, reason } from "../error.ts";
 import * as netGroup from "../group.ts";
+import { Cost, type Route, routesEqual, UNKNOWN_HOP } from "../hop.ts";
+import { scopeCaptures, scopeHead, scopeOverlaps } from "../internal.ts";
 import * as Path from "../path.ts";
 import type { Reader, Stream } from "../stream.ts";
 import { type Timescale, Timestamp } from "../time.ts";
@@ -11,14 +13,16 @@ import { withTimeout } from "../util/timeout.ts";
 import type { Session } from "./adapter.ts";
 import { DuplicateTrackAlias, RetiredTrackAlias, TrackAliases } from "./aliases.ts";
 import * as Cluster from "./cluster.ts";
+import { requestReason, toRequestCode } from "./error.ts";
 import { Frame, type Group as GroupMessage } from "./object.ts";
 import { toWire } from "./priority.ts";
 import { type Publish, PublishError } from "./publish.ts";
 import {
-	PublishNamespace,
+	type PublishNamespace,
 	PublishNamespaceDone,
 	PublishNamespaceError,
 	PublishNamespaceOk,
+	PublishNamespaceUpdate,
 } from "./publish_namespace.ts";
 import { RequestError, RequestOk } from "./request.ts";
 import { joinFilter, Subscribe, SubscribeError, SubscribeOk, Unsubscribe } from "./subscribe.ts";
@@ -101,10 +105,10 @@ export class Subscriber {
 	// two messages about one source, which the MoQ Solicit draft requires us to tolerate.
 	// Counting them is what keeps the second from duplicating the announce and the first
 	// to end from retracting what the other still holds.
-	#announced = new Map<Path.Valid, number>();
+	#announced = new Map<Path.Valid, { count: number; route: Route }>();
 
-	// Any consumers that want each new announcement.
-	#announcedConsumers = new Set<announce.Producer>();
+	// Any consumers that want each new announcement, keyed by their local filter.
+	#announcedConsumers = new Map<announce.Producer, Path.Pattern>();
 
 	/**
 	 * Creates a new Subscriber instance.
@@ -136,21 +140,34 @@ export class Subscriber {
 		return advert !== undefined && this.#cluster !== undefined && Cluster.loops(advert, this.#cluster.self);
 	}
 
+	/** The route an advertisement carries; one without a path is anonymous and free. */
+	#route(advert: Cluster.Advert | undefined): Route {
+		if (advert === undefined) return { hops: [UNKNOWN_HOP], cost: Cost.zero };
+		return { hops: advert.hops, cost: { warm: advert.cost, cold: advert.cost } };
+	}
+
 	/**
-	 * Gets an announced reader for the specified prefix.
+	 * Gets an announced reader matching `scope`. Paths are relative to the session,
+	 * not the scope.
 	 *
 	 * The peer is asked with SUBSCRIBE_NAMESPACE regardless of what it declared, and an
 	 * unsolicited PUBLISH_NAMESPACE lands here too, so a peer that only tells and one
 	 * that only answers are both discovered.
 	 */
-	announced(prefix = Path.empty()): announce.Consumer {
-		const announced = new announce.Producer(prefix);
-		for (const active of this.#announced.keys()) {
-			const suffix = Path.stripPrefix(prefix, active);
-			if (suffix === null) continue;
-			announced.append({ path: suffix, active: true });
+	announced(scope: Path.Pattern = Path.Pattern.all()): announce.Consumer {
+		// The wire speaks announce interest by prefix.
+		const prefix = scopeHead(scope);
+		const announced = new announce.Producer();
+		for (const [active, info] of this.#announced) {
+			if (!scopeOverlaps(scope, active)) continue;
+			announced.append({
+				path: active,
+				captures: scopeCaptures(scope, active),
+				kind: "announced",
+				route: info.route,
+			});
 		}
-		this.#announcedConsumers.add(announced);
+		this.#announcedConsumers.set(announced, scope);
 
 		void this.#runAnnounced(announced, prefix).finally(() => {
 			this.#announcedConsumers.delete(announced);
@@ -164,16 +181,34 @@ export class Subscriber {
 	 * Record one more advertisement for a path, telling consumers only when it is the
 	 * first. A second one is the same namespace said twice, not news.
 	 */
-	#attachAnnounce(path: Path.Valid) {
-		const count = this.#announced.get(path) ?? 0;
-		this.#announced.set(path, count + 1);
-		if (count > 0) return;
+	#attachAnnounce(path: Path.Valid, route: Route) {
+		const existing = this.#announced.get(path);
+		if (existing) {
+			existing.count += 1;
+			return;
+		}
+		this.#announced.set(path, { count: 1, route });
 
 		console.debug(`announced: broadcast=${path} active=true`);
-		for (const consumer of this.#announcedConsumers) {
-			const suffix = Path.stripPrefix(consumer.prefix, path);
-			if (suffix === null) continue;
-			consumer.append({ path: suffix, active: true });
+		for (const [consumer, scope] of this.#announcedConsumers) {
+			if (!scopeOverlaps(scope, path)) continue;
+			consumer.append({ path, captures: scopeCaptures(scope, path), kind: "announced", route });
+		}
+	}
+
+	/**
+	 * Replace the stored route for a path that is already announced. A no-op when the
+	 * hops and cost did not change; otherwise consumers hear `updated` so a forwarder
+	 * can reprice without retracting.
+	 */
+	#updateAnnounce(path: Path.Valid, route: Route) {
+		const existing = this.#announced.get(path);
+		if (existing === undefined || routesEqual(existing.route, route)) return;
+		existing.route = route;
+		console.debug(`announced: broadcast=${path} rerouted`);
+		for (const [consumer, scope] of this.#announcedConsumers) {
+			if (!scopeOverlaps(scope, path)) continue;
+			consumer.append({ path, captures: scopeCaptures(scope, path), kind: "updated", route });
 		}
 	}
 
@@ -181,10 +216,10 @@ export class Subscriber {
 	 * Drop one advertisement for a path, retracting it only once the last one goes.
 	 */
 	#detachAnnounce(path: Path.Valid) {
-		const count = this.#announced.get(path);
-		if (count === undefined) return;
-		if (count > 1) {
-			this.#announced.set(path, count - 1);
+		const existing = this.#announced.get(path);
+		if (existing === undefined) return;
+		if (existing.count > 1) {
+			existing.count -= 1;
 			return;
 		}
 
@@ -195,11 +230,15 @@ export class Subscriber {
 		this.#consumes.evict(path);
 		console.debug(`announced: broadcast=${path} active=false`);
 
-		for (const consumer of this.#announcedConsumers) {
-			const suffix = Path.stripPrefix(consumer.prefix, path);
-			if (suffix === null) continue;
+		for (const [consumer, scope] of this.#announcedConsumers) {
+			if (!scopeOverlaps(scope, path)) continue;
 			try {
-				consumer.append({ path: suffix, active: false });
+				consumer.append({
+					path,
+					captures: scopeCaptures(scope, path),
+					kind: "retracted",
+					route: existing.route,
+				});
 			} catch {
 				// Consumer already closed, will be cleaned up
 			}
@@ -287,10 +326,14 @@ export class Subscriber {
 								continue;
 							}
 
-							// A repeat updates the advertisement; only the first is news.
-							if (!live.has(path)) {
+							// A repeat replaces the advertisement in place: HOP_PATH / ROUTE_COST
+							// can change without a NAMESPACE_DONE. Only the first is a new path.
+							const route = this.#route(entry.cluster);
+							if (live.has(path)) {
+								this.#updateAnnounce(path, route);
+							} else {
 								live.add(path);
-								this.#attachAnnounce(path);
+								this.#attachAnnounce(path, route);
 							}
 						} else if (msgType === SubscribeNamespaceEntryDone.id) {
 							const entry = await SubscribeNamespaceEntryDone.decode(stream.reader, version);
@@ -403,12 +446,12 @@ export class Subscriber {
 
 		console.debug(`subscribe start: id=${requestId} broadcast=${broadcast} track=${request.name}`);
 
-		// IETF negotiates group order in SUBSCRIBE_OK; this implementation only
-		// supports descending (newest-first), so commit ordered: false. (There's no
-		// per-frame timescale, so the rest stay at their defaults.) This
-		// resolves the consumer's track.info() and gives us the write side that
-		// incoming object streams are routed into.
-		const producer = request.accept({ ordered: false });
+		// IETF negotiates group order in SUBSCRIBE_OK; this implementation only supports
+		// descending (newest-first), which is what moq-lite fixes group order to, so the
+		// mapping needs nothing here. (There's no per-frame timescale either, so every
+		// property stays at its default.) This resolves the consumer's track.info() and
+		// gives us the write side that incoming object streams are routed into.
+		const producer = request.accept({});
 
 		// Open the stream and wait for SUBSCRIBE_OK under a timeout. State
 		// flows back via `state` so the timeout path can clean up the stream
@@ -515,11 +558,16 @@ export class Subscriber {
 				break;
 			}
 
+			// Close before the cancellation is written, not after: awaiting the write first
+			// reopens the window the demand re-check above just closed, and a subscriber that
+			// returned during it would be closed by this line. The lite subscriber closes
+			// straight out of its loop for the same reason.
+			producer.close();
+
 			// The publisher already ended the request, so there is nothing to cancel. Sending
 			// UNSUBSCRIBE here would name a request it has already torn down.
 			if (terminal !== publisherEnded) await this.#cancelSubscribe(stream, requestId);
 
-			producer.close();
 			stream.close();
 			console.debug(`subscribe close: id=${requestId} broadcast=${broadcast} track=${request.name}`);
 		} catch (err) {
@@ -609,7 +657,7 @@ export class Subscriber {
 						version === Version.DRAFT_14
 							? await SubscribeError.decode(state.stream.reader, version)
 							: await RequestError.decode(state.stream.reader, version);
-					reasonPhrase = `code=${err.errorCode} reason=${err.reasonPhrase}`;
+					reasonPhrase = requestReason(err.errorCode, err.reasonPhrase, "subscribe", version);
 				}
 			} catch {
 				// Decoding error response failed, use default message
@@ -655,7 +703,7 @@ export class Subscriber {
 			await stream.writer.u53(RequestError.id);
 			await new RequestError({
 				requestId: msg.requestId,
-				errorCode: 400,
+				errorCode: toRequestCode("uninterested", "publish_namespace", version),
 				reasonPhrase: "route loops back",
 			}).encode(stream.writer, version);
 			stream.close();
@@ -671,18 +719,21 @@ export class Subscriber {
 		const legacy = version === Version.DRAFT_14 || version === Version.DRAFT_15;
 		if (legacy && (this.#announced.has(path) || this.#legacyRequests.has(path))) {
 			console.warn("duplicate PublishNamespace");
+			// No draft registers a code for a duplicate, and this refusal is a draft-14/15
+			// implementation limit, which is what INTERNAL_ERROR describes.
+			const errorCode = toRequestCode("internal", "publish_namespace", version);
 			if (version === Version.DRAFT_14) {
 				await stream.writer.u53(PublishNamespaceError.id);
 				await new PublishNamespaceError({
 					requestId: msg.requestId,
-					errorCode: 409,
+					errorCode,
 					reasonPhrase: "duplicate namespace",
 				}).encode(stream.writer, version);
 			} else {
 				await stream.writer.u53(RequestError.id);
 				await new RequestError({
 					requestId: msg.requestId,
-					errorCode: 409,
+					errorCode,
 					reasonPhrase: "duplicate namespace",
 				}).encode(stream.writer, version);
 			}
@@ -716,11 +767,13 @@ export class Subscriber {
 			// Only now is the advertisement ours to announce, for the reason above: a
 			// consumer reacting with a SUBSCRIBE must not interleave with that OK.
 			attached = true;
-			this.#attachAnnounce(path);
+			this.#attachAnnounce(path, this.#route(msg.cluster));
 
-			// An advertisement is updated in place, by repeating PUBLISH_NAMESPACE on the
-			// stream that already carries it, so read until the stream ends rather than
-			// waiting on the close. Nothing else would deliver a re-parented route.
+			// An advertisement is updated in place with REQUEST_UPDATE on the stream that
+			// already carries it, so read until the stream ends rather than waiting on the
+			// close. Nothing else would deliver a re-parented route. What the peer holds
+			// is kept current, since an update carries only what changed.
+			let held = msg.cluster;
 			const done = version === Version.DRAFT_16 || legacy;
 			for (;;) {
 				if (await stream.reader.done()) break;
@@ -730,38 +783,63 @@ export class Subscriber {
 					await PublishNamespaceDone.decode(stream.reader, version);
 					break;
 				}
-				if (typeId !== PublishNamespace.id) {
+				// A repeated PUBLISH_NAMESPACE lands here too: a second request on the
+				// stream is the base draft's duplicate request ID.
+				if (typeId !== PublishNamespaceUpdate.id) {
 					throw new ProtocolViolation(
 						`unexpected message on publish_namespace stream: 0x${typeId.toString(16)}`,
 					);
 				}
 
-				const update = await PublishNamespace.decode(stream.reader, version, Cluster.negotiated(this.#cluster));
+				const update = await PublishNamespaceUpdate.decode(stream.reader, version);
 
-				// The stream is the advertisement, so an update on it must name the same
-				// one. Applying a mismatched update would retarget this path with metadata
-				// meant for a different request.
-				if (update.requestId !== msg.requestId || update.trackNamespace !== path) {
-					throw new ProtocolViolation("publish_namespace update does not match its stream");
+				// The parameters exist only on a session that negotiated the extension;
+				// anywhere else they are the peer's violation.
+				if (held === undefined) {
+					if (update.update.hops !== undefined || update.update.cost !== undefined) {
+						throw new ProtocolViolation("cluster parameters on a session that negotiated none");
+					}
+				} else {
+					// A different original publisher is a different advertisement, which the
+					// draft has withdrawn and made again: its content is not continuous with
+					// what is held. Refusing the update closes the stream, which is that
+					// withdrawal.
+					if (update.update.hops !== undefined && update.update.hops[0] !== held.hops[0]) {
+						console.warn(`publish_namespace update changes the publisher: broadcast=${path}`);
+						await stream.writer.u53(RequestError.id);
+						await new RequestError({
+							errorCode: toRequestCode("not_supported", "publish_namespace", version),
+							reasonPhrase: "a new publisher is a new advertisement",
+						}).encode(stream.writer, version);
+						stream.close();
+						return;
+					}
+					held = Cluster.apply(held, update.update);
 				}
 
-				// A path that now runs through us is unusable, so give it back. Keep
-				// reading: this stream is the advertisement's only channel, so a later
-				// clean path arrives here or nowhere.
-				if (this.#reflected(update.cluster)) {
+				// A path that now runs through us is unusable, so give it back. The update
+				// itself is accepted, and reading continues: this stream is the
+				// advertisement's only channel, so a later clean path arrives here or
+				// nowhere.
+				if (this.#reflected(held)) {
 					if (attached) {
 						attached = false;
 						console.debug(`publish_namespace now loops back, detaching: broadcast=${path}`);
 						this.#detachAnnounce(path);
 					}
-					continue;
+				} else if (!attached) {
+					// Re-attach: a clean path replaced the reflected one we detached from.
+					attached = true;
+					this.#attachAnnounce(path, this.#route(held));
+				} else {
+					this.#updateAnnounce(path, this.#route(held));
 				}
 
-				// Re-attach: a clean path replaced the reflected one we detached from.
-				if (!attached) {
-					attached = true;
-					this.#attachAnnounce(path);
-				}
+				// Nothing here can fail to apply, so every update is acknowledged. A leaf
+				// routes nothing, so a repricing changes nothing it holds; consumers still
+				// hear the new route so a forwarder can reprice.
+				await stream.writer.u53(RequestOk.id);
+				await new RequestOk({}).encode(stream.writer, version);
 			}
 		} finally {
 			if (legacy) this.#legacyRequests.delete(path);
@@ -783,18 +861,18 @@ export class Subscriber {
 	async runPublish(msg: Publish, stream: Stream) {
 		const version = this.#session.version;
 
-		// NOT_SUPPORTED, from the PUBLISH error codes in draft-19 section 10.10. We decline
-		// the method itself rather than this particular track, which is UNINTERESTED (0x4).
+		// We decline the method itself rather than this particular track, which would be
+		// UNINTERESTED.
 		//
 		// The alias the message carries is deliberately not recorded. Nothing will ever bind
 		// it, and a rejected request has no lifetime of ours to hang the cleanup on.
-		const NOT_SUPPORTED = 0x3;
+		const errorCode = toRequestCode("not_supported", "publish", version);
 
 		if (version === Version.DRAFT_14) {
 			await stream.writer.u53(PublishError.id);
 			const err = new PublishError({
 				requestId: msg.requestId,
-				errorCode: NOT_SUPPORTED,
+				errorCode,
 				reasonPhrase: "publish not supported",
 			});
 			await err.encode(stream.writer, version);
@@ -802,7 +880,7 @@ export class Subscriber {
 			await stream.writer.u53(RequestError.id);
 			const err = new RequestError({
 				requestId: version === Version.DRAFT_15 || version === Version.DRAFT_16 ? msg.requestId : undefined,
-				errorCode: NOT_SUPPORTED,
+				errorCode,
 				reasonPhrase: "publish not supported",
 			});
 			await err.encode(stream.writer, version);

@@ -9,15 +9,26 @@
 export * as Signals from "@moq/signals";
 /** Broadcast announcement streams. */
 export * as Announce from "./announced.ts";
+/** Send-side bandwidth estimates split among the tracks sharing a connection. */
+export * as Bandwidth from "./bandwidth.ts";
 /** Broadcast role handles. */
 export * as Broadcast from "./broadcast.ts";
-/** Connection helpers: connect to or accept a MoQ session and reconnect on failure. */
-export * as Connection from "./connection/index.ts";
-/** The error a read or write rejects with when the peer resets a stream, carrying its code. */
-export { RemoteError } from "./error.ts";
+/** A reconnecting, shareable handle on a MoQ session. */
+export { Connection } from "./connection/index.ts";
+/** Session and stream errors, each carrying a code from its own registry. */
+export {
+	NotFound,
+	SessionCode,
+	SessionError,
+	StreamCode,
+	StreamError,
+	type StreamErrorOptions,
+} from "./error.ts";
 /** Group role handles and frame helpers. */
 export * as Group from "./group.ts";
-/** Broadcast path utilities with delimiter-aware prefix matching. */
+/** Broadcast routing tables, independent of any connection. */
+export * as Origin from "./origin.ts";
+/** Broadcast path utilities with delimiter-aware prefix matching. Path patterns are re-exported from `@moq/pattern`. */
 export * as Path from "./path.ts";
 /** Branded time types (nanoseconds, microseconds, milliseconds, seconds) with conversions. */
 export * as Time from "./time.ts";

@@ -23,7 +23,7 @@ class FakeBroadcast {
 mock.module("../../publish/src/index.ts", () => ({
 	Source: { Camera: FakeSource, Microphone: FakeSource, Screen: FakeSource },
 	Video: { Capture: FakePipeline, Encoder: FakePipeline },
-	Audio: { Encoder: FakePipeline },
+	Audio: { Capture: FakePipeline, Encoder: FakePipeline },
 	Broadcast: FakeBroadcast,
 }));
 const { Local } = await import("./local.ts");
@@ -32,7 +32,7 @@ async function flush() {
 }
 
 test("screen capture stays enabled while pending and resets after a live share ends", async () => {
-	const local = new Local({ connection: undefined, identity: Path.from("alice") });
+	const local = new Local({ origin: undefined, identity: Path.from("alice") });
 	try {
 		await flush();
 		local.screenEnabled.set(true);

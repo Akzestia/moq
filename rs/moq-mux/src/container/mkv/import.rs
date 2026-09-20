@@ -67,6 +67,17 @@ enum TrackKind {
 	Audio,
 }
 
+impl TrackKind {
+	/// The publisher priority for this kind of media, so audio isn't stuck behind a
+	/// video backlog on a busy connection.
+	fn priority(&self) -> u8 {
+		match self {
+			Self::Video => hang::catalog::PRIORITY.video,
+			Self::Audio => hang::catalog::PRIORITY.audio,
+		}
+	}
+}
+
 struct MkvTrack {
 	kind: TrackKind,
 	track: crate::container::Producer<crate::catalog::hang::Container>,
@@ -282,19 +293,26 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 			}
 		};
 
-		let track = self
-			.broadcast
-			.create_track(self.broadcast.unique_name(suffix), self.catalog.track_info())?;
+		let track = self.broadcast.create_track(
+			self.broadcast.unique_name(suffix),
+			self.catalog.track_info(kind.priority()),
+		)?;
 		let name = track.name().to_string();
 
 		// Build the media producer before publishing the rendition. It is fallible (its
 		// timeline track can collide), and a rendition published for a track we then fail
 		// to produce would be advertised to consumers but never served.
-		let wire = crate::catalog::hang::Container::try_from(&self.container)?;
+		let wire = crate::catalog::hang::Container::new(
+			&self.container,
+			match kind {
+				TrackKind::Video => crate::container::Kind::Video,
+				TrackKind::Audio => crate::container::Kind::Audio,
+			},
+		)?;
 		let media = self.catalog.media_producer(track, wire)?;
 
 		let mut catalog = self.catalog.clone();
-		let mut catalog = catalog.lock();
+		let mut catalog = catalog.modify()?;
 
 		match kind {
 			TrackKind::Video => {
@@ -388,7 +406,7 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 		// Manage groups: new group on video keyframe; audio always finishes its group immediately.
 		match track.kind {
 			TrackKind::Video => {
-				if keyframe && let Some(mut prev) = track.group.take() {
+				if keyframe && let Some(prev) = track.group.take() {
 					prev.finish()?;
 				}
 				track.track.write(frame)?;
@@ -416,7 +434,7 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 	/// Finish all tracks, flushing current groups.
 	pub fn finish(&mut self) -> Result<()> {
 		for track in self.tracks.values_mut() {
-			if let Some(mut g) = track.group.take() {
+			if let Some(g) = track.group.take() {
 				g.finish()?;
 			}
 			track.track.finish()?;
@@ -438,7 +456,10 @@ impl<E: crate::catalog::hang::CatalogExt> Import<E> {
 
 	/// Drop every rendition this importer registered from the catalog.
 	fn unregister(&mut self) {
-		let mut catalog = self.catalog.lock();
+		// A closed catalog has nothing left to unregister from.
+		let Ok(mut catalog) = self.catalog.modify() else {
+			return;
+		};
 		for track in self.tracks.values() {
 			match track.kind {
 				TrackKind::Video => {

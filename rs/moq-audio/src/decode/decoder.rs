@@ -3,8 +3,6 @@
 //! Mirror of [`encode::Encoder`](crate::encode::Encoder): dispatches over the
 //! catalog codec and produces interleaved `f32` PCM.
 
-use std::time::Duration;
-
 use unsafe_libopus::{
 	OPUS_OK, OPUS_RESET_STATE, OpusDecoder, opus_decode_float, opus_decoder_create, opus_decoder_ctl_impl,
 	opus_decoder_destroy, varargs,
@@ -28,7 +26,8 @@ const MAX_FRAME_MS: usize = 120;
 /// A track keeps its groups for a while after they are read, so a decoder does
 /// not always open on an empty one: a player rebuilding its decoder subscribes
 /// while its predecessor still holds groups, and a rendition switched away from
-/// and back to stays warm for the track's idle linger. What to do with that
+/// and back to stays warm on the origin for the track's idle linger (cached
+/// groups, not an upstream subscription). What to do with that
 /// backlog depends on the consumer, and the two answers are opposites, so it is
 /// asked rather than guessed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,24 +67,22 @@ pub struct Config {
 	/// Channel count to emit. `None` uses the codec's native count; anything
 	/// else remixes mono and stereo at the decode boundary.
 	pub channels: Option<u32>,
-	/// Upper bound on buffering before skipping a stalled group.
+	/// How far playback may drift from the live edge before skipping a stalled group.
 	///
-	/// Forwarded to [`moq_mux::container::Consumer::with_latency`]: if a group is
-	/// stuck and a newer group is more than this far ahead, the consumer skips.
-	/// `None` keeps the moq-mux default of zero, which skips aggressively. Set it
-	/// to the playout buffer you can tolerate (typically tens to a few hundred ms)
-	/// for the best congestion-vs-quality trade-off. The `_max` suffix is a
-	/// reminder that we never *add* latency here: the consumer skips only when
-	/// newer data is already this far ahead. A companion `latency_min` for
-	/// jitter-buffer padding will land in a follow-up.
-	pub latency_max: Option<Duration>,
+	/// Applied to the initial transport subscription and inherited by
+	/// [`moq_mux::container::Consumer`]. Defaults to
+	/// [`std::time::Duration::ZERO`](std::time::Duration::ZERO), which skips aggressively.
+	/// Set [`max_age`](Self::max_age) to the playout buffer you can
+	/// tolerate (typically tens to a few hundred ms) for the best
+	/// congestion-vs-quality trade-off.
+	pub max_age: std::time::Duration,
 	/// Where to start on a track that already holds groups.
 	pub start: Start,
 }
 
 impl Config {
 	/// A default config: the codec's native rate and channel count, interleaved
-	/// `f32`, and the moq-mux default latency.
+	/// `f32`, and real-time latency.
 	pub fn new() -> Self {
 		Self::default()
 	}
@@ -263,10 +260,15 @@ impl Decoder {
 	/// Reset codec history and reapply startup delay for a new discontinuous epoch.
 	pub fn reset(&mut self) -> Result<(), Error> {
 		self.reset_prediction()?;
+		self.reapply_delay();
+		Ok(())
+	}
+
+	/// Reapply catalog startup delay for a new playhead epoch without resetting codec prediction.
+	pub(super) fn reapply_delay(&mut self) {
 		if let Backend::Opus(opus) = &mut self.backend {
 			opus.pre_skip_remaining = self.delay;
 		}
-		Ok(())
 	}
 
 	/// Reset codec prediction after packet loss without reapplying stream startup delay.

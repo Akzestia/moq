@@ -22,11 +22,12 @@ import asyncio, moq
 
 async def main():
     async with moq.Client("https://cdn.moq.dev/anon") as client:
-        # Subscribe to media
+        # Subscribe to media. An announcement is a route; resolve the broadcast at its path.
         async for announcement in client.announced("live/"):
-            catalog = await announcement.broadcast.catalog()
+            broadcast = await client.request_broadcast(announcement.path)
+            catalog = await broadcast.catalog()
             name, track = next(iter(catalog.audio.items()))
-            async for frame in await announcement.broadcast.subscribe_media(name, track):
+            async for frame in await broadcast.subscribe_media(name, track):
                 print(frame.timestamp_us, len(frame.payload))
 
 asyncio.run(main())
@@ -41,8 +42,9 @@ async def main():
         broadcast = client.create_broadcast("my-stream.hang")
 
         # Already-encoded frames: the catalog is filled from the bitstream
-        audio = broadcast.publish_media("opus", opus_init_bytes)
+        audio = broadcast.publish_audio(moq.AudioFormat.OPUS, opus_init_bytes)
         audio.write_frame(payload, timestamp_us=0)
+        audio.cut()   # audio has no keyframes, so this is what gives it groups
 
         # Or raw pixels, encoded inside the binding (VideoToolbox, Media Foundation, NVENC, openh264)
         video = broadcast.publish_video(
@@ -57,15 +59,35 @@ async def main():
         status = broadcast.publish_json_snapshot("status", compression=True)
         status.update({"state": "live", "viewers": 42})
 
+        broadcast.announce()
+
 asyncio.run(main())
 ```
+
+The three advertising operations, as the other bindings spell them:
+`client.create_broadcast(path)` (or `OriginProducer.create_broadcast`) returns
+an unadvertised producer; `broadcast.announce(route)` /
+`broadcast.unannounce()` own that exact-path advertisement;
+`origin.dynamic(prefix, route)` claims `prefix` and every path beneath it
+(`""` for everything). Hold the returned handle while the claim should stay
+advertised, and reject the requests you will not serve. A route is a
+capability, not an inventory; announcement `.path` is the covered prefix.
+
+Sessions reconnect with backoff when the transport drops and re-announce local
+broadcasts. `session.epoch()` counts the connections, 1 on the first, pairing
+with `session.status()` to log each reconnect; `moq.Backoff` tunes the pacing
+(`timeout_us=0` retries forever); and `moq.connect(..., max_streams=...)`
+raises the peer's inbound stream cap.
 
 Everything in the [shared feature list](/lib/#what-every-binding-can-do) is
 here: `moq.Server` with per-request accept/reject, `fetch_group` and
 `fetch_media_group`, `dynamic()` handlers for on-demand tracks and
-broadcasts, `append_datagram`/`recv_datagram`, `set_catalog_section`,
+`dynamic(prefix)` for broadcasts, `append_datagram`/`recv_datagram`, `set_catalog_section`,
 `route_updates()`, and `used()`/`unused()` so capture can idle when nobody is
-subscribed. `moq.is_auth(err)` and `moq.is_shutdown(err)` classify errors.
+subscribed. `request.set_publish`/`set_consume` raise if the request is already
+answered, cancelled, or currently accepting. `session.bandwidth()` divides the connection's send estimate;
+pass it to `encode_video` / `encode_audio` or `reserve` a share for an
+app-owned track. `moq.is_auth(err)` and `moq.is_shutdown(err)` classify errors. `moq.protocol_error(err)` is the structured protocol failure (scope, verbatim code, kind) when the peer sent one. Catch `moq.Error.Busy` when a setter races an in-flight connect, listen, or accept.
 
 - API reference: [moq-rs.readthedocs.io](https://moq-rs.readthedocs.io)
 - Source and examples: [`py/moq-rs`](https://github.com/moq-dev/moq/tree/main/py/moq-rs)

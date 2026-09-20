@@ -12,8 +12,8 @@ configured rate.
 
 ## Plan
 
-Uses the reservation surface from
-[Binding rate control](/quest/m1/binding-rate-control.md). Apply grants through
+Uses the reservation surface from libmoq (`moq_session_bandwidth`,
+`moq_bandwidth_reserve`, `moq_reservation_grant`). Apply grants through
 the shape `moq_video::encode::rate::Control` uses (drops at once, raises ramp,
 hysteresis) rather than pushing every change into `obs_encoder_update`; whether
 that policy sits in moq-ffi behind the reservation or in the plugin depends on
@@ -21,7 +21,6 @@ whether a second binding wants it. Verify against a shaped uplink and with
 `just obs compile` and `just obs test`; document the behaviour in
 `doc/bin/obs.md`.
 
-## Required
+<## Required
 
 - [OBS migration](/quest/m2/cpp/obs.md) - the plugin is on the generated C++ first
-- [Binding rate control](/quest/m1/binding-rate-control.md) - the reservation the plugin reads

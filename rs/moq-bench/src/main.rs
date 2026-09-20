@@ -23,12 +23,12 @@ async fn main() -> anyhow::Result<()> {
 
 	let config = Config::load()?;
 	anyhow::ensure!(
-		config.client.connect.is_some(),
-		"--client-connect is required (or set it in the TOML file)"
+		config.client.url.is_some(),
+		"--connect is required (or set it in the TOML file)"
 	);
 
 	let config = Arc::new(config);
-	let client = config.client.clone().init()?;
+	let client = config.client.clone().init(config.quic.clone())?;
 	let stats = Arc::new(Stats::default());
 
 	// Periodic throughput reporter, optionally mirrored to a JSONL file. Keep the
@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
 
 	tracing::info!(
 		connections = count,
-		url = %moq_native::RedactedUrl::new(config.client.connect.as_ref().unwrap()),
+		url = %moq_tokio::RedactedUrl::new(config.client.url.as_ref().unwrap()),
 		"starting benchmark"
 	);
 
@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
 		});
 	}
 
-	let duration = config.duration;
+	let duration = config.duration.map(moq_tokio::cli::Duration::into_std);
 	let stop = async move {
 		match duration {
 			Some(d) => tokio::time::sleep(d).await,

@@ -6,8 +6,7 @@ A moq-transport client presents a Common Access Token
 ([draft-ietf-moq-c4m](https://datatracker.ietf.org/doc/draft-ietf-moq-c4m/))
 in the SETUP `AUTHORIZATION TOKEN` option and the relay admits it with the
 scope the token's `moqt` claim names, through the same
-[auth server](/quest/m1/auth/README.md) contract every other credential
-uses. Our own clients can present one; `moq auth serve` verifies one; the
+`moq-auth` request contract every other credential uses. Our own clients can present one; `moq auth serve` verifies one; the
 relay stays crypto-free and forwards the bytes. This is moq-transport only:
 a CAT scopes itself by moq-transport message (`SUBSCRIBE`, `FETCH`,
 `PUBLISH_NAMESPACE`, ...), which moq-lite has no equivalent for, so it rides
@@ -43,9 +42,10 @@ Boundaries decided while planning:
 ## Plan
 
 Order: the wire first so a token reaches the auth server; verification;
-then our clients present one. Everything requires the m1 auth line, which
-owns the `Request` this rides, the server that answers it, and the
-`moq_auth::jwt` module `cat` sits beside.
+then our clients present one. Everything rides `moq_auth::Request` and
+`moq auth serve`, which shipped on dev. The JWT types sit at the crate root;
+the verify quest moves them under `moq_auth::jwt` so `cat` is a sibling
+module rather than a set of prefixed names.
 
 ## Quests
 
@@ -60,8 +60,6 @@ owns the `Request` this rides, the server that answers it, and the
 
 ## Related
 
-- [Auth server](/quest/m1/auth/README.md) - the contract, the lease, and the
-  server every quest here builds on
 - [In-band auth](/quest/m2/auth/README.md) - credentials presented after
   SETUP, which this line refuses on the IETF wire; its [Token in
   band](/quest/m2/auth/token-in-band.md) quest owns the client token

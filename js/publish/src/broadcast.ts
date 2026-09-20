@@ -8,10 +8,16 @@ import { type Kind, Rendition } from "./rendition";
 // Signals the broadcast reads. Whoever owns the backing Signal (the element, or another component
 // whose output is wired in, e.g. a Video.Capture's `display`) does the writing.
 export type BroadcastInput = {
-	connection: Getter<Moq.Connection.Established | undefined>;
+	// The origin to publish into. Independent of any connection: whichever sessions serve the
+	// origin announce the broadcast, and it survives their reconnects.
+	origin: Getter<Moq.Origin.Table | undefined>;
 
-	// Whether to publish the broadcast. Defaults to false so nothing is announced until ready.
+	// Whether to create the broadcast. Defaults to true.
 	enabled: Getter<boolean>;
+
+	// Whether to advertise the broadcast. Defaults to true. The flip rather than a gate on
+	// creating it: tracks can be populated while this is false, then announced once ready.
+	announce: Getter<boolean>;
 
 	// The broadcast name.
 	name: Getter<Moq.Path.Valid>;
@@ -32,7 +38,7 @@ export type BroadcastInput = {
 	 * A retention budget, not a delivery one, so lowering it does not reduce latency: it only
 	 * shortens how far back a fetch can reach.
 	 */
-	latencyMax: Getter<number | undefined>;
+	maxAge: Getter<number | undefined>;
 };
 
 /**
@@ -57,10 +63,11 @@ export class Broadcast {
 	// root sections (e.g. `scte35`) by locking it too.
 	readonly catalog = new CatalogProducer();
 
-	// The underlying network broadcast, (re)created on each (re)connection and `undefined` while
-	// offline. Exposed so an application can serve its own tracks alongside the built-in
+	// The underlying network broadcast, recreated when the name or enabled state changes and
+	// `undefined` in between. It lives in the origin rather than any session, so it spans
+	// reconnects. Exposed so an application can serve its own tracks alongside the built-in
 	// catalog/audio/video, e.g. `net.createTrack("meta.json")` plus a matching `catalog` section.
-	// Reacquire it via an effect, since reconnecting swaps in a fresh producer.
+	// Reacquire it via an effect, since a rename swaps in a fresh producer.
 	readonly net = new Signal<Moq.Broadcast.Producer | undefined>(undefined);
 
 	// The registered renditions keyed by full track name. A plain object so deep-equality detects a
@@ -75,12 +82,13 @@ export class Broadcast {
 
 	constructor(props?: Inputs<BroadcastInput>) {
 		this.in = {
-			connection: getter(props?.connection),
-			enabled: getter(props?.enabled ?? false),
+			origin: getter(props?.origin),
+			enabled: getter(props?.enabled ?? true),
+			announce: getter(props?.announce ?? true),
 			name: getter(props?.name ?? Moq.Path.empty()),
 			display: getter(props?.display),
 			flip: getter(props?.flip ?? false),
-			latencyMax: getter(props?.latencyMax),
+			maxAge: getter(props?.maxAge),
 		};
 
 		this.#signals.run(this.#runCatalog.bind(this));
@@ -95,6 +103,18 @@ export class Broadcast {
 	/** Register an audio rendition under a full track name (e.g. `"audio/data"`). Throws if the name is taken. */
 	audio(name: string): Rendition<Catalog.AudioConfig> {
 		return this.#register<Catalog.AudioConfig>(name, "audio");
+	}
+
+	/**
+	 * Register a text (caption/subtitle) rendition under a full track name (e.g. `"captions/en"`).
+	 * Throws if the name is taken.
+	 *
+	 * Set the returned rendition's `config` to a {@link Catalog.TextConfig}, then write one cue per
+	 * group into its `track` with `Hang.Container.Legacy.Producer` (each cue is a keyframe, so it opens
+	 * its own group). See the module docs for the cue framing.
+	 */
+	text(name: string): Rendition<Catalog.TextConfig> {
+		return this.#register<Catalog.TextConfig>(name, "text");
 	}
 
 	#register<C>(name: string, kind: Kind): Rendition<C> {
@@ -135,6 +155,7 @@ export class Broadcast {
 
 		const video: Record<string, Catalog.VideoConfig> = {};
 		const audio: Record<string, Catalog.AudioConfig> = {};
+		const text: Record<string, Catalog.TextConfig> = {};
 
 		for (const rendition of Object.values(renditions)) {
 			const config = enabled ? effect.get(rendition.config) : undefined;
@@ -142,8 +163,10 @@ export class Broadcast {
 
 			if (rendition.kind === "video") {
 				video[rendition.name] = config as Catalog.VideoConfig;
-			} else {
+			} else if (rendition.kind === "audio") {
 				audio[rendition.name] = config as Catalog.AudioConfig;
+			} else {
+				text[rendition.name] = config as Catalog.TextConfig;
 			}
 		}
 
@@ -168,13 +191,19 @@ export class Broadcast {
 			} else {
 				delete catalog.audio;
 			}
+
+			if (Object.keys(text).length > 0) {
+				catalog.text = { renditions: text };
+			} else {
+				delete catalog.text;
+			}
 		});
 	}
 
 	#run(effect: Effect) {
-		const values = effect.getAll([this.in.enabled, this.in.connection]);
+		const values = effect.getAll([this.in.enabled, this.in.origin]);
 		if (!values) return;
-		const [_enabled, connection] = values;
+		const [_enabled, origin] = values;
 
 		const name = effect.get(this.in.name);
 		if (Catalog.detectFormat(name) === undefined) {
@@ -183,10 +212,17 @@ export class Broadcast {
 			);
 		}
 
-		const broadcast = new Moq.Broadcast.Producer();
+		// Creating into the origin outlives any single session: a reconnect re-announces the
+		// broadcast and new subscriptions land on the same producer.
+		const broadcast = origin.createBroadcast(name);
 		effect.cleanup(() => broadcast.close());
 
-		// Close every active rendition track when the broadcast tears down (reconnect/offline), so an
+		effect.run((inner) => {
+			if (inner.get(this.in.announce)) broadcast.announce();
+			else broadcast.unannounce();
+		});
+
+		// Close every active rendition track when the broadcast tears down (disable/rename), so an
 		// encoder stops encoding into a dead producer. The Rendition handles themselves stay registered.
 		effect.cleanup(() => {
 			for (const track of this.#tracks.values()) {
@@ -195,13 +231,11 @@ export class Broadcast {
 			}
 		});
 
-		// Publish it before serving so an application reacting to `net` can insert its own tracks.
+		// Expose it before serving so an application reacting to `net` can insert its own tracks.
 		this.net.set(broadcast);
 		effect.cleanup(() => {
 			if (this.net.peek() === broadcast) this.net.set(undefined);
 		});
-
-		connection.publish(name, broadcast);
 
 		effect.spawn(this.#runBroadcast.bind(this, broadcast, effect));
 	}
@@ -213,7 +247,10 @@ export class Broadcast {
 
 			if (request.name === Broadcast.CATALOG_TRACK || request.name === Broadcast.CATALOG_TRACK_COMPRESSED) {
 				const compression = request.name === Broadcast.CATALOG_TRACK_COMPRESSED;
-				const track = request.accept();
+				// The catalog keeps the bare retention defaults (it is read at the live edge, which
+				// is always retained) but still declares its priority, so a relay forwards it ahead
+				// of the media it describes. Matches `hang::Catalog::default_track_info`.
+				const track = request.accept({ priority: Catalog.PRIORITY.catalog });
 
 				// Serve from a per-subscription child scope. Releasing it when this subscriber leaves keeps
 				// serving state from piling up on the connection-lifetime effect as viewers come and go.
@@ -233,9 +270,17 @@ export class Broadcast {
 			}
 
 			// Media, so declare the retention a FETCH-based consumer needs (the catalog above
-			// keeps the bare defaults: it is read at the live edge, which is always retained).
-			// Matches what a Rust publisher declares via `hang::container::track_info`.
-			const track = request.accept(Container.trackInfo({ latencyMax: this.in.latencyMax.peek() }));
+			// keeps the bare defaults: it is read at the live edge, which is always retained),
+			// plus the priority for what this rendition carries. Matches what a Rust publisher
+			// declares via `hang::container::track_info`; `Kind` and `PRIORITY` share their names,
+			// so a new kind can't be added on one side without the other noticing.
+			const kind = this.#renditions.peek()[request.name]?.kind;
+			const track = request.accept(
+				Container.trackInfo({
+					maxAge: this.in.maxAge.peek(),
+					priority: kind ? Catalog.PRIORITY[kind] : Catalog.PRIORITY.video,
+				}),
+			);
 
 			// A second subscription for the same name supersedes the first: close the old producer.
 			signal.peek()?.close();

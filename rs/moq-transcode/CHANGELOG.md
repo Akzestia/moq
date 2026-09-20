@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Preserve a source catalog's `archive` entry on the derivative instead of
+  synthesizing a timeline for the transcode output.
+
 ## [0.0.19](https://github.com/moq-dev/moq/compare/moq-transcode-v0.0.18...moq-transcode-v0.0.19) - 2026-09-17
 
 ### Other

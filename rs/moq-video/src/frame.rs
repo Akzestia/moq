@@ -158,7 +158,9 @@ impl DmaBufPlane {
 pub struct DmaBufExport {
 	fd: OwnedFd,
 	// The producer's lease, held so its buffer outlives the descriptor. Only the
-	// renderer ever reads it back out, through `into_parts`.
+	// renderer ever reads it back out, through `into_parts`, so without that feature
+	// the field is pure keepalive rather than dead.
+	#[cfg_attr(not(feature = "render"), allow(dead_code))]
 	inner: Arc<dyn DmaBufFrame>,
 }
 
@@ -224,7 +226,7 @@ impl DmaBufExport {
 
 	/// Split the descriptor from the lease that keeps the producer's buffer alive,
 	/// for a consumer that has to own the two separately. Only the renderer does.
-	#[cfg_attr(not(feature = "render"), expect(dead_code))]
+	#[cfg(feature = "render")]
 	pub(crate) fn into_parts(self) -> (OwnedFd, Arc<dyn DmaBufFrame>) {
 		(self.fd, self.inner)
 	}

@@ -10,6 +10,15 @@ use hang::catalog::{AudioCodec, VideoCodec};
 
 use super::{Export, Import};
 
+/// A drift budget no test timeline comes close to, so the exporter reads every group.
+///
+/// The media track's full retention window, so an exporter started after publishing
+/// can still read every retained group. These tests write or import a whole broadcast
+/// and only then export it, which the
+/// exporter's default [`Duration::ZERO`] collapses to the
+/// live edge: completeness has to be asked for, exactly as a real recorder does.
+const RECORDING_MAX_AGE: Duration = Duration::from_secs(30);
+
 /// A minimal `AVCDecoderConfigurationRecord` (profile 0x42, level 0x1f, one SPS + PPS).
 fn avcc() -> Vec<u8> {
 	let sps = [0x67u8, 0x42, 0xc0, 0x1f];
@@ -169,7 +178,10 @@ async fn export_emits_sequence_headers_and_frames() {
 	importer.decode(&bytes::BytesMut::from(synth_flv().as_slice())).unwrap();
 	catalog.finish().unwrap();
 
-	let exporter = Export::new(crate::source::announced(&consumer)).await.unwrap();
+	let exporter = Export::new(crate::source::announced(&consumer))
+		.await
+		.unwrap()
+		.with_max_age(RECORDING_MAX_AGE);
 	let exported = drain_export(exporter, importer).await;
 
 	let tags = parse_tags(&exported);
@@ -517,9 +529,17 @@ fn build_multitrack_broadcast() -> (moq_net::broadcast::Consumer, Vec<Vec<u8>>, 
 		});
 		config.container = Container::Legacy;
 		config.description = Some(Bytes::from(description.clone()));
-		catalog.lock().video.renditions.insert(track.name().to_string(), config);
+		catalog
+			.modify()
+			.unwrap()
+			.video
+			.renditions
+			.insert(track.name().to_string(), config);
 
-		let mut video = Producer::new(track, crate::catalog::hang::Container::Legacy);
+		let mut video = Producer::new(
+			track,
+			crate::catalog::hang::Container::Legacy(crate::container::Kind::Data),
+		);
 		video
 			.write(crate::container::Frame {
 				timestamp: Timestamp::from_millis(0).unwrap(),
@@ -537,11 +557,15 @@ fn build_multitrack_broadcast() -> (moq_net::broadcast::Consumer, Vec<Vec<u8>>, 
 	audio_config.container = Container::Legacy;
 	audio_config.description = Some(Bytes::from_static(&ASC));
 	catalog
-		.lock()
+		.modify()
+		.unwrap()
 		.audio
 		.renditions
 		.insert(audio_track.name().to_string(), audio_config);
-	let mut audio = crate::container::Producer::new(audio_track, crate::catalog::hang::Container::Legacy);
+	let mut audio = crate::container::Producer::new(
+		audio_track,
+		crate::catalog::hang::Container::Legacy(crate::container::Kind::Data),
+	);
 	audio
 		.write(crate::container::Frame {
 			timestamp: Timestamp::from_millis(0).unwrap(),
@@ -741,7 +765,8 @@ async fn export_authors_dts_and_composition_time_for_reordered_avc() {
 	video_config.description = Some(Bytes::from(avcc()));
 	video_config.jitter = Some(Duration::from_millis(80));
 	catalog
-		.lock()
+		.modify()
+		.unwrap()
 		.video
 		.renditions
 		.insert(video_track.name().to_string(), video_config);
@@ -750,12 +775,16 @@ async fn export_authors_dts_and_composition_time_for_reordered_avc() {
 	audio_config.container = Container::Legacy;
 	audio_config.description = Some(Bytes::from_static(&ASC));
 	catalog
-		.lock()
+		.modify()
+		.unwrap()
 		.audio
 		.renditions
 		.insert(audio_track.name().to_string(), audio_config);
 
-	let mut video = crate::container::Producer::new(video_track, crate::catalog::hang::Container::Legacy);
+	let mut video = crate::container::Producer::new(
+		video_track,
+		crate::catalog::hang::Container::Legacy(crate::container::Kind::Data),
+	);
 	let video_frame = |timestamp_ms: u64, payload: &'static [u8], keyframe| crate::container::Frame {
 		timestamp: Timestamp::from_millis(timestamp_ms).unwrap(),
 		duration: None,
@@ -768,7 +797,10 @@ async fn export_authors_dts_and_composition_time_for_reordered_avc() {
 	video.write(video_frame(120, &[0, 0, 0, 1, 0x41], false)).unwrap();
 	video.finish().unwrap();
 
-	let mut audio = crate::container::Producer::new(audio_track, crate::catalog::hang::Container::Legacy);
+	let mut audio = crate::container::Producer::new(
+		audio_track,
+		crate::catalog::hang::Container::Legacy(crate::container::Kind::Data),
+	);
 	audio
 		.write(crate::container::Frame {
 			timestamp: Timestamp::from_millis(20).unwrap(),

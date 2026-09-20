@@ -47,9 +47,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
-clap = { workspace = true }
-# Default features on (unlike the workspace entry) so the example gets a QUIC backend.
-moq-native = { path = "../moq-native" }
+moq-tokio = { workspace = true, features = ["quinn", "aws-lc-rs", "websocket"] }
 # test-util unlocks tokio::time::pause for the deterministic live-feed tests.
 tokio = { workspace = true, features = ["full", "test-util"] }
 url = { workspace = true }
+usage = { workspace = true }

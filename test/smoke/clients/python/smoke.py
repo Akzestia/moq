@@ -16,14 +16,15 @@ import sys
 import moq
 
 READ_CHUNK = 64 * 1024
-LATENCY_MAX_MS = 1_000  # subscribe_media congestion-control / lookahead window
+MAX_AGE_US = 1_000_000  # subscribe_media congestion-control / lookahead window
 
 
 async def publish(url: str, broadcast: str) -> None:
     async with moq.Client(url, tls_verify=False) as client:
         # Hold the producer for the lifetime of the publish loop; finish() unpublishes.
         producer = client.create_broadcast(broadcast)
-        media = producer.publish_media_stream("avc3")
+        media = producer.publish_video_stream(moq.VideoFormat.AVC3)
+        producer.announce()
         print(f"publishing {broadcast!r} (Annex-B H.264 from stdin) to {url}")
 
         loop = asyncio.get_running_loop()
@@ -62,7 +63,7 @@ async def subscribe(url: str, broadcast: str, timeout: float) -> None:
         video = catalog.video[track_name]
 
         media = await consumer.subscribe_media(
-            track_name, video.container, moq.Subscription(latency_max_ms=LATENCY_MAX_MS)
+            track_name, video.container, moq.Subscription(max_age_us=MAX_AGE_US)
         )
 
         total = 0

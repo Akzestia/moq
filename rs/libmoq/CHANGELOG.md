@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Demand watchers: `moq_publish_track_demand`, `moq_publish_media_demand`,
+  `moq_encode_video_demand`, and `moq_encode_audio_demand` report `MOQ_DEMAND_USED` /
+  `MOQ_DEMAND_UNUSED` (a `moq_demand`) immediately and on every change, closed by
+  `moq_publish_demand_close`.
+- Track requests: `moq_publish_dynamic` serves subscriptions to undeclared tracks as
+  `moq_track_request_*` handles (`name`, `accept`, `video`, `audio`, `abort`, `free`).
+  Group requests: `moq_publish_track_dynamic` and `moq_track_request_dynamic` serve fetches
+  of uncached groups as `moq_group_request_*` handles (`sequence`, `priority`, `frame_start`,
+  `accept`, `abort`, `free`). `accept` positions the producer at `frame_start`. Both
+  handlers close with `moq_publish_dynamic_close`.
+- `moq_error_protocol` fills a `moq_protocol_error` (scope, verbatim wire code, kind) for
+  the last protocol failure on this thread. Do not parse `moq_error()` for that. Local
+  `Unauthorized` still returns status -34; a session-scoped unauthorized protocol close is
+  `Error::Moq` (-2) with this record.
+
+### Changed
+
+- Bare-integer durations are microseconds: `max_age_us` on decoder outputs,
+  track info, subscriptions, and `moq_consume_video` / `moq_consume_audio`;
+  reconnect backoff is `backoff_initial_us` / `backoff_max_us` /
+  `backoff_timeout_us`.
+- `moq_announced` is `moq_announce_update` with `pattern` / `pattern_len` instead of `path` / `path_len`. `moq_broadcast_request_abort` is `moq_broadcast_request_reject`; `_free` is unchanged.
+- `moq_publish_media` splits into `moq_publish_audio`, `moq_publish_video`, and
+  `moq_publish_container`, taking `moq_audio_init`, `moq_video_init`, and `moq_container_init`.
+  Each carries only the fields its kind can honor, so a label on a container no longer compiles.
+- Formats are enums (`moq_audio_format`, `moq_video_format`, `moq_container_format`) rather than
+  strings. As with `moq_audio_sample_format`, the struct field is a `u32` and an out-of-range code
+  is rejected, since matching an invalid discriminant as a Rust enum would be undefined behavior.
+- A container has its own handle space and `moq_publish_container_write` / `_cut` / `_seek` /
+  `_finish`. `write` takes no timestamp: a container carries its tracks' timing itself, and
+  `moq_publish_media_frame` used to accept one and drop it. A handle from one family is rejected by
+  the other's calls.
+- The raw encoder entry points are `moq_encode_audio*` and `moq_encode_video*`, matching their
+  existing `moq_video_encoder_frame` naming and freeing `moq_publish_audio` / `moq_publish_video`
+  for the encoded path.
+- `moq_audio_format` (the PCM sample layout) is now `moq_audio_sample_format`, matching
+  `moq_video_pixel_format`.
+
 ## [0.5.16](https://github.com/moq-dev/moq/compare/libmoq-v0.5.15...libmoq-v0.5.16) - 2026-09-17
 
 ### Other
@@ -44,7 +84,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Publish and consume human-readable audio and video rendition labels.
 - `moq_session_snapshot` for statistics and negotiated protocol from the same live connection
+
+### Changed
+
+- `moq_publish_media` now takes an extensible `moq_media_config` instead of positional arguments.
+- `moq_video_config` and `moq_audio_config` gained trailing `label` / `label_len` fields. Both structs
+  are caller-allocated and the consume calls write into them, so this is a recompile, not a
+  drop-in replacement for an existing header.
+- `moq_publish_media` rejects a label on a container format (fmp4, mkv, ts, flv) instead of
+  silently dropping it.
 
 ## [0.5.13](https://github.com/moq-dev/moq/compare/libmoq-v0.5.12...libmoq-v0.5.13) - 2026-09-02
 

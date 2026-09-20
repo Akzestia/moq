@@ -42,7 +42,7 @@ prefix. Keyframe requests stay out.
 
 ## Related
 
-- [Ladder](/quest/m1/ladder/README.md) - the transcode ladder that adapts to
+- [Ladder](/quest/m2/ladder/README.md) - the transcode ladder that adapts to
   its uplink today
 - [Keyframe trigger](/quest/m2/keyframe-trigger.md) - the keyframe request
   this loop does not send

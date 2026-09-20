@@ -20,12 +20,13 @@ crate-type = ["staticlib"]
 anyhow = { workspace = true, features = ["backtrace"] }
 bytes = { workspace = true }
 hang = { workspace = true }
+kio = { workspace = true }
 # Codecs only: OBS and the other C consumers do their own device I/O.
 moq-audio = { workspace = true, features = ["aac"] }
 moq-json = { workspace = true }
 moq-mux = { workspace = true }
-moq-native = { workspace = true, default-features = true }
 moq-net = { workspace = true }
+moq-tokio = { workspace = true, features = ["noq", "aws-lc-rs", "websocket", "tcp", "uds"] }
 # Enable the NVIDIA and VAAPI hardware codecs (default-off at the workspace
 # level). Both dlopen their driver at runtime; `vaapi` also runs bindgen at build
 # time, so building libmoq on Linux needs libclang (the dev shell carries it).

@@ -8,10 +8,8 @@ async function main() {
 	const announced = connection.announced();
 
 	// Discover broadcasts announced by the server
-	for (;;) {
-		const announcement = await announced.next();
-		if (!announcement) break;
-
+	for await (const announcement of announced) {
+		if (announcement.kind === "retracted") continue;
 		console.log("New stream available:", announcement.path);
 
 		// Subscribe to new streams

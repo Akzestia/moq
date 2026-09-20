@@ -29,11 +29,11 @@ import Moq
 let client = Client()
 let session = try await client.connect(to: "https://relay.example.com")
 
-// session.publisher and session.consumer are always populated: by whatever
+// session.publish and session.consume are always populated: by whatever
 // origin you wired via setPublish / setConsume before connect, or by a fresh
 // auto-created one. The duplex no-config path (the typical client) shares one
 // origin between both sides.
-let announced = try session.consumer.announced(prefix: "demos/")
+let announced = try session.consume.announced(prefix: "demos/")
 for try await announcement in announced {
     print("got broadcast \(announcement.path)")
 
@@ -49,13 +49,13 @@ session.shutdown()
 To publish through the auto-created origin:
 
 ```swift
-let broadcast = try session.publisher.createBroadcast(path: "my-stream")
+let broadcast = try session.publish.createBroadcast(path: "my-stream")
 // ... configure tracks on broadcast ...
 ```
 
 Cancelling the surrounding Swift `Task` propagates through to the underlying `cancel()` calls on each consumer. `session.shutdown()` is an alias for `cancel(code: 0)` (code 0 means "no error").
 
-A note on enum casing: `MoqError` keeps Rust's PascalCase variants, each carrying `message: String` (e.g. `MoqError.Closed(message: "...")`); plain enums round-trip to lowerCamelCase (`AudioFormat.s16`, `AudioCodec.opus`).
+A note on enum casing: `MoqError` keeps Rust's PascalCase variants, each carrying `message: String` (e.g. `MoqError.Closed(message: "...")`); plain enums round-trip to lowerCamelCase (`AudioFormat.s16`). Audio codecs are objects with constructors (`AudioCodec.opus()`).
 
 ## API shape
 

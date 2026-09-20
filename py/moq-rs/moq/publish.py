@@ -6,12 +6,17 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from moq_ffi import (
+    MoqAudioFormat,
+    MoqAudioInit,
     MoqAudioProducer,
     MoqBroadcastDynamic,
     MoqBroadcastProducer,
+    MoqContainerFormat,
+    MoqContainerInit,
+    MoqContainerProducer,
+    MoqContainerStreamProducer,
     MoqGroupProducer,
     MoqGroupRequest,
-    MoqInit,
     MoqJsonSnapshotConfig,
     MoqJsonSnapshotProducer,
     MoqJsonStreamConfig,
@@ -21,6 +26,8 @@ from moq_ffi import (
     MoqTrackDynamic,
     MoqTrackProducer,
     MoqTrackRequest,
+    MoqVideoFormat,
+    MoqVideoInit,
     MoqVideoProducer,
 )
 
@@ -40,18 +47,24 @@ from .types import (
 )
 
 if TYPE_CHECKING:
+    from .session import Bandwidth, Reservation
     from .subscribe import BroadcastConsumer, GroupConsumer, TrackConsumer
 
 
-def _media_init(format: str, init: bytes, video: VideoHint | None) -> MoqInit:
-    return MoqInit(format=format, data=init, video=video)
+def _audio_init(format: MoqAudioFormat, init: bytes, label: str | None) -> MoqAudioInit:
+    return MoqAudioInit(format=format, data=init, label=label)
+
+
+def _video_init(format: MoqVideoFormat, init: bytes, label: str | None, hint: VideoHint | None) -> MoqVideoInit:
+    return MoqVideoInit(format=format, data=init, label=label, hint=hint)
 
 
 class MediaProducer:
     """Publish encoded media frames on a single track, one payload at a time.
 
-    Built via :meth:`BroadcastProducer.publish_media`. Push each encoded frame
-    with :meth:`write_frame`, then :meth:`finish` when the stream ends.
+    Built via :meth:`BroadcastProducer.publish_audio` or
+    :meth:`BroadcastProducer.publish_video`. Push each encoded frame with
+    :meth:`write_frame`, then :meth:`finish` when the stream ends.
     """
 
     def __init__(self, inner: MoqMediaProducer) -> None:
@@ -74,8 +87,79 @@ class MediaProducer:
         """Write one encoded frame with a presentation timestamp in microseconds."""
         self._inner.write_frame(Frame(payload=payload, timestamp_us=timestamp_us))
 
+    def cut(self) -> None:
+        """Draw a group boundary here.
+
+        Audio has no boundary of its own (every packet is independently
+        decodable), so this is the only thing that gives it groups: call it
+        after every frame for one group (one QUIC stream) the relay forwards
+        without waiting, or at a segment cadence to align with video. Video
+        groups at its own keyframes and needs this only to override that.
+        """
+        self._inner.cut()
+
+    def seek(self, sequence: int) -> None:
+        """Draw a group boundary and number the next group ``sequence``.
+
+        :meth:`cut` with an explicit sequence, for a publisher whose group
+        numbers have to be deterministic: two encoders aligning per GOP so a
+        consumer can fail over between them.
+        """
+        self._inner.seek(sequence)
+
     def finish(self) -> None:
         """Finish publishing and flush a clean end to subscribers."""
+        self._inner.finish()
+
+
+class ContainerProducer:
+    """Publish a container, which demuxes and publishes its own tracks.
+
+    Built via :meth:`BroadcastProducer.publish_container`. Unlike
+    :class:`MediaProducer` there is no per-frame timestamp: a container carries
+    its tracks' timing itself.
+    """
+
+    def __init__(self, inner: MoqContainerProducer) -> None:
+        self._inner = inner
+
+    def write(self, payload: bytes) -> None:
+        """Write a whole chunk of container bytes."""
+        self._inner.write(payload)
+
+    def cut(self) -> None:
+        """Declare that the next chunk starts a new segment, rolling a group on every track.
+
+        An fMP4 source carrying ``styp`` atoms declares its own segments, so
+        this is only needed when it doesn't. Formats with no segment concept
+        (MKV, TS, FLV) ignore it.
+        """
+        self._inner.cut()
+
+    def seek(self, sequence: int) -> None:
+        """Start a new segment and number its groups ``sequence``."""
+        self._inner.seek(sequence)
+
+    def finish(self) -> None:
+        """Finish every track this container publishes."""
+        self._inner.finish()
+
+
+class ContainerStreamProducer:
+    """Publish a container fed by a raw byte stream, which recovers its own framing.
+
+    Built via :meth:`BroadcastProducer.publish_container_stream`.
+    """
+
+    def __init__(self, inner: MoqContainerStreamProducer) -> None:
+        self._inner = inner
+
+    def write(self, payload: bytes) -> None:
+        """Push raw container bytes; chunk boundaries don't matter."""
+        self._inner.write(payload)
+
+    def finish(self) -> None:
+        """Finish every track this container publishes."""
         self._inner.finish()
 
 
@@ -83,7 +167,7 @@ class MediaStreamProducer:
     """Wraps MoqMediaStreamProducer: feed a raw byte stream (e.g. Annex-B
     H.264) and let the importer infer frame boundaries.
 
-    Built via :meth:`BroadcastProducer.publish_media_stream`. Unlike
+    Built via :meth:`BroadcastProducer.publish_video_stream`. Unlike
     :class:`MediaProducer`, no per-frame timestamps are needed; just push
     encoder bytes as they arrive.
     """
@@ -122,7 +206,10 @@ class GroupProducer:
         self._inner.write_frame(Frame(payload=payload, timestamp_us=timestamp_us))
 
     def finish(self) -> None:
-        """Close this group cleanly, marking it complete for subscribers."""
+        """Close this group cleanly, marking it complete for subscribers.
+
+        The handle remains so :meth:`abort` can still run.
+        """
         self._inner.finish()
 
     def abort(self, error_code: int) -> None:
@@ -179,7 +266,7 @@ class TrackProducer:
     def consume(self, subscription: Subscription | None = None) -> TrackConsumer:
         """Create a consumer that reads directly from this producer's track.
 
-        ``subscription`` tunes delivery priority, group ordering priority, and group range; omit for defaults.
+        ``subscription`` tunes delivery priority, group range, and staleness; omit for defaults.
         """
         from .subscribe import TrackConsumer
 
@@ -190,7 +277,10 @@ class TrackProducer:
         self._inner.abort(error_code)
 
     def finish(self) -> None:
-        """Finish publishing and flush a clean end to subscribers."""
+        """Finish publishing and flush a clean end to subscribers.
+
+        The handle remains so :meth:`abort` can still run.
+        """
         self._inner.finish()
 
     def finish_at(self, final_sequence: int) -> None:
@@ -216,7 +306,7 @@ class TrackRequest:
     def accept(self, info: TrackInfo | None = None) -> TrackProducer:
         """Accept the request as a raw track.
 
-        ``info`` fixes the track's timescale, priority, ordering priority, and cache; omit for defaults.
+        ``info`` fixes the track's timescale, priority, and cache; omit for defaults.
         """
         return TrackProducer(self._inner.accept(info))
 
@@ -347,6 +437,15 @@ class AudioProducer:
         """Push one frame of PCM in the configured input format."""
         self._inner.write(frame)
 
+    def reservation(self) -> Reservation | None:
+        """This encoder's bandwidth reservation, if published against a session allocator."""
+        inner = self._inner.reservation()
+        if inner is None:
+            return None
+        from .session import Reservation as ReservationType
+
+        return ReservationType(inner)
+
     def finish(self) -> None:
         """Flush any pending samples and finalize the track."""
         self._inner.finish()
@@ -402,6 +501,15 @@ class VideoProducer:
         """
         self._inner.set_bitrate(bitrate)
 
+    def reservation(self) -> Reservation | None:
+        """This encoder's bandwidth reservation, if published against a session allocator."""
+        inner = self._inner.reservation()
+        if inner is None:
+            return None
+        from .session import Reservation as ReservationType
+
+        return ReservationType(inner)
+
     def finish(self) -> None:
         """Flush any frames the codec is holding and finalize the track."""
         self._inner.finish()
@@ -453,73 +561,121 @@ class BroadcastProducer:
         """Accept subscriptions to tracks that are not published yet."""
         return BroadcastDynamic(self._inner.dynamic())
 
-    def set_route(self, route: Route) -> None:
-        """Update the broadcast's route: the hop chain, cost, and liveness it advertises.
+    def announce(self, route: Route | None = None) -> None:
+        """Advertise this broadcast's exact path as a route.
 
-        Use this as conditions shift (e.g. a standby transcoder lowering its
-        ``cost`` once warm); consumers observe the change via
-        :meth:`BroadcastConsumer.route_changed`.
+        Announcing again re-prices the route in place. An unannounced broadcast
+        stays reachable by exact path; announcing only makes the path discoverable.
         """
-        self._inner.set_route(route)
+        self._inner.announce(route if route is not None else Route())
 
-    def set_announce(self, announce: bool) -> None:
-        """Set whether the broadcast is announced, keeping the rest of its route.
-
-        The origin advertises the path only while announced; an unannounced
-        broadcast stays reachable by exact path for subscribes and fetches. This is
-        how a publisher goes on and off the air without tearing down the broadcast.
-        """
-        self._inner.set_announce(announce)
+    def unannounce(self) -> None:
+        """Retract this broadcast's exact-path advertisement, if any."""
+        self._inner.unannounce()
 
     def set_video_properties(self, properties: VideoProperties) -> None:
         """Replace the catalog properties shared by every video rendition."""
         self._inner.set_video_properties(properties)
 
-    def publish_media(
+    def publish_audio(
         self,
-        format: str,
-        init: bytes = b"",
-        video: VideoHint | None = None,
+        format: MoqAudioFormat,
+        init: bytes,
+        *,
+        label: str | None = None,
     ) -> MediaProducer:
-        """Publish a single media track. `format` selects the codec (e.g. "opus", "avc3"); `init` is
-        its codec init bytes (required for audio formats). `video` seeds catalog fields the stream
-        can't reveal (bitrate) or publishes the catalog before the first keyframe. See
-        :class:`VideoHint`."""
-        return MediaProducer(self._inner.publish_media(_media_init(format, init, video)))
+        """Publish one audio codec as a new track. `init` is required: audio resolves its whole
+        rendition from those bytes (an OpusHead, an AudioSpecificConfig, a STREAMINFO). `label` is
+        the human-readable rendition name stored in the catalog."""
+        return MediaProducer(self._inner.publish_audio(_audio_init(format, init, label)))
 
-    def publish_media_on_track(
+    def publish_video(
+        self,
+        format: MoqVideoFormat,
+        init: bytes = b"",
+        *,
+        label: str | None = None,
+        hint: VideoHint | None = None,
+    ) -> MediaProducer:
+        """Publish one video codec as a new track. `init` may be empty for a format that resolves in
+        band. `hint` seeds catalog fields the stream can't reveal (bitrate) or publishes the catalog
+        before the first keyframe. See :class:`VideoHint`."""
+        return MediaProducer(self._inner.publish_video(_video_init(format, init, label, hint)))
+
+    def publish_container(
+        self,
+        format: MoqContainerFormat,
+        init: bytes = b"",
+    ) -> ContainerProducer:
+        """Publish a container, which demuxes and publishes its own tracks. There is no label or
+        hint: a container describes each track it publishes from its own metadata."""
+        return ContainerProducer(self._inner.publish_container(MoqContainerInit(format=format, data=init)))
+
+    def publish_audio_on_track(
         self,
         request: TrackRequest,
-        format: str,
-        init: bytes = b"",
-        video: VideoHint | None = None,
+        format: MoqAudioFormat,
+        init: bytes,
+        *,
+        label: str | None = None,
     ) -> MediaProducer:
-        """Publish media onto a requested track. See :meth:`publish_media` for the arguments."""
-        return MediaProducer(self._inner.publish_media_on_track(request._inner, _media_init(format, init, video)))
+        """Publish one audio codec onto a requested track. See :meth:`publish_audio`."""
+        return MediaProducer(self._inner.publish_audio_on_track(request._inner, _audio_init(format, init, label)))
 
-    def publish_media_stream(
+    def publish_video_on_track(
         self,
-        format: str,
-        video: VideoHint | None = None,
-    ) -> MediaStreamProducer:
-        """Publish a media track fed by a raw byte stream (unknown frame
-        boundaries). `format` is a stream format (avc3, hev1, av01, fmp4, mkv).
-        `video` seeds catalog fields as in :meth:`publish_media`."""
-        return MediaStreamProducer(self._inner.publish_media_stream(_media_init(format, b"", video)))
+        request: TrackRequest,
+        format: MoqVideoFormat,
+        init: bytes = b"",
+        *,
+        label: str | None = None,
+        hint: VideoHint | None = None,
+    ) -> MediaProducer:
+        """Publish one video codec onto a requested track. See :meth:`publish_video`."""
+        return MediaProducer(self._inner.publish_video_on_track(request._inner, _video_init(format, init, label, hint)))
 
-    def publish_audio(
+    def publish_video_stream(
+        self,
+        format: MoqVideoFormat,
+        *,
+        label: str | None = None,
+        hint: VideoHint | None = None,
+    ) -> MediaStreamProducer:
+        """Publish a video track fed by a raw byte stream (unknown frame boundaries). Only the
+        self-delimiting formats work: `AVC3`, `HEV1`, `AV01`. There is no audio counterpart, since
+        audio has no frame boundaries to infer."""
+        return MediaStreamProducer(self._inner.publish_video_stream(_video_init(format, b"", label, hint)))
+
+    def publish_container_stream(self, format: MoqContainerFormat) -> ContainerStreamProducer:
+        """Publish a container fed by a raw byte stream, which recovers its own framing."""
+        return ContainerStreamProducer(self._inner.publish_container_stream(format))
+
+    def encode_audio(
         self,
         name: str,
         input: AudioEncoderInput,
         output: AudioEncoderOutput,
+        *,
+        bandwidth: Bandwidth | None = None,
     ) -> AudioProducer:
-        """Publish a raw-audio track with an in-process Opus encoder."""
-        return AudioProducer(self._inner.publish_audio(name, input, output))
+        """Publish a raw-audio track with an in-process encoder.
 
-    def publish_video(
+        Select the codec with ``moq.AudioCodec.opus()`` (currently the only
+        constructor), placed in ``output``.
+
+        Pass ``bandwidth`` to reserve this track's bitrate against the session's
+        allocator so a co-resident video encoder sizes itself against what is left.
+        """
+        return AudioProducer(
+            self._inner.encode_audio(name, input, output, None if bandwidth is None else bandwidth._inner)
+        )
+
+    def encode_video(
         self,
         input: VideoEncoderInput,
         output: VideoEncoderOutput,
+        *,
+        bandwidth: Bandwidth | None = None,
     ) -> VideoProducer:
         """Publish a raw-video track with an in-process H.264/H.265 encoder.
 
@@ -527,8 +683,11 @@ class BroadcastProducer:
         from the codec (``.avc3`` / ``.hev1``). The catalog rendition is
         published immediately so subscribers can discover it before the first
         frame exists.
+
+        Pass ``bandwidth`` to reserve this track's configured bitrate and follow
+        the grant.
         """
-        return VideoProducer(self._inner.publish_video(input, output))
+        return VideoProducer(self._inner.encode_video(input, output, None if bandwidth is None else bandwidth._inner))
 
     def publish_track(self, name: str, info: TrackInfo | None = None) -> TrackProducer:
         """Create a track. Send any bytes, no codec validation. ``info`` sets track

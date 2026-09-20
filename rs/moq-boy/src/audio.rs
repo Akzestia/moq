@@ -14,7 +14,7 @@ use bytes::Bytes;
 /// The Game Boy APU outputs stereo audio.
 const CHANNELS: u32 = 2;
 /// 64 kbps is reasonable for stereo Game Boy audio (simple waveforms).
-const OPUS_BITRATE: u32 = 64_000;
+const OPUS_BITRATE: moq_net::bandwidth::Rate = moq_net::bandwidth::Rate::from_kbps(64);
 
 pub struct AudioEncoder {
 	producer: moq_audio::encode::Producer,
@@ -48,7 +48,7 @@ impl AudioEncoder {
 		self.producer.reset_epoch();
 	}
 
-	/// Publish an empty group marking the pause, so the gap the re-anchored epoch is about
+	/// Publish a marker group marking the pause, so the gap the re-anchored epoch is about
 	/// to open reads as a break rather than one very long packet.
 	pub fn discontinuity(&mut self) -> Result<()> {
 		self.producer.discontinuity()?;

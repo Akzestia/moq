@@ -41,4 +41,4 @@ full library's C ABI. The slim header is a subset.
 
 ## Related
 
-- [#2152](/quest/m1/2152-libmoq-c-abi-catch-up-with-the-moq-ffi-surface.md) - the C ABI catch-up; a video decode knob landing there lands behind the `video` feature
+- [#2152](/quest/m2/2152-libmoq-c-abi-catch-up-with-the-moq-ffi-surface.md) - the C ABI catch-up; a video decode knob landing there lands behind the `video` feature

@@ -8,9 +8,10 @@ use crate::container::Frame;
 /// ESDS atom); build the config with [`config`]. Every AAC packet is independently decodable, so
 /// [`decode`](Self::decode) marks only the first frame of each group a keyframe (the rest extend it):
 /// frames accumulate into the current group until the caller [`cut`](Self::cut)s or [`seek`](Self::seek)s.
-/// The [`import::Track`](crate::import::Track) facade cuts after every packet by default (one group
-/// per frame, so the relay forwards without waiting); a caller that drives its own boundaries (a
-/// segment cadence) cuts less often. The codec's packet loss concealment handles drops.
+/// The [`import::Track`](crate::import::Track) facade passes that through, so boundaries are the
+/// caller's either way: cut per packet for one group (one QUIC stream) the relay forwards without
+/// waiting, or at a segment cadence to align with video. The codec's packet loss concealment
+/// handles drops.
 pub struct Import<E: CatalogExt = ()> {
 	track: crate::container::Producer<crate::catalog::hang::Container>,
 	rendition: crate::catalog::AudioTrack<E>,
@@ -25,21 +26,19 @@ impl<E: CatalogExt> Import<E> {
 	pub fn new(
 		track: moq_net::track::Producer,
 		reserved: crate::catalog::Reserved<E>,
-		mut config: hang::catalog::AudioConfig,
+		config: hang::catalog::AudioConfig,
 	) -> crate::Result<Self> {
 		tracing::debug!(name = ?track.name(), ?config, "starting track");
-		// Advertise this rendition's timeline before publishing (the generic set() no longer does).
-		config.timeline = Some(reserved.producer().timeline(track.name())?.section());
 		// The caller's config names the container; the writer is built from that same value so the
 		// wire cannot disagree with what the rendition advertises.
-		let wire = crate::catalog::hang::Container::try_from(&config.container)?;
+		let wire = crate::catalog::hang::Container::try_from(&config)?;
 		let name = track.name().to_string();
-		// Build the writer before advertising the rendition: it is fallible (its timeline track can
-		// collide), and a rendition published for a track we then fail to produce would be
-		// advertised to consumers but never served.
+		// Build the writer before advertising the rendition: it is fallible (enrolling the track in
+		// the broadcast timeline can collide), and a rendition published for a track we then fail to
+		// produce would be advertised to consumers but never served.
 		let media = reserved.producer().media_producer(track, wire)?;
-		let mut rendition = reserved.audio(name);
-		rendition.set(config);
+		let mut rendition = reserved.audio(name)?;
+		rendition.set(config)?;
 		Ok(Self {
 			track: media,
 			rendition,
@@ -56,18 +55,10 @@ impl<E: CatalogExt> Import<E> {
 		self.track.track().demand()
 	}
 
-	/// Refine the single audio rendition in place, republishing the catalog.
-	///
-	/// The TS importer uses this to set the synthesized `description` and an
-	/// audio-burst `jitter` once it knows them.
-	pub(crate) fn update_rendition(&mut self, f: impl FnOnce(&mut hang::catalog::AudioConfig)) {
-		self.rendition.update(f);
-	}
-
 	/// Finish the track, flushing the current group.
 	pub fn finish(&mut self) -> crate::Result<()> {
 		self.track.finish()?;
-		self.estimate();
+		self.estimate()?;
 		Ok(())
 	}
 
@@ -79,30 +70,37 @@ impl<E: CatalogExt> Import<E> {
 
 	/// Publish what the track measured (bitrate, jitter) into the catalog rendition, filling only
 	/// the fields its config didn't supply.
-	fn estimate(&mut self) {
-		self.rendition.estimate(self.track.estimate());
+	fn estimate(&mut self) -> crate::Result<()> {
+		self.rendition.estimate(self.track.estimate())
+	}
+
+	/// Record the media duration emitted together by the TS importer.
+	pub(crate) fn burst(&mut self, duration: std::time::Duration) -> crate::Result<()> {
+		self.track.burst(duration);
+		self.estimate()?;
+		Ok(())
 	}
 
 	/// Cut the current group at `end` without finishing the track.
 	pub fn cut(&mut self, end: Option<moq_net::Timestamp>) -> crate::Result<()> {
 		self.track.cut(end)?;
-		self.estimate();
+		self.estimate()?;
 		Ok(())
 	}
 
-	/// Mark a break in the timeline by publishing an empty group. To bound the closing
+	/// Mark a break in the timeline by publishing a marker group. To bound the closing
 	/// group's final frame first, [`cut(end)`](Self::cut) before this. See
 	/// [`Producer::discontinuity`](crate::container::Producer::discontinuity).
 	pub fn discontinuity(&mut self) -> crate::Result<()> {
 		self.track.discontinuity()?;
-		self.estimate();
+		self.estimate()?;
 		Ok(())
 	}
 
 	/// Close the current group and open the next one at `sequence`.
 	pub fn seek(&mut self, sequence: u64) -> crate::Result<()> {
 		self.track.seek(sequence)?;
-		self.estimate();
+		self.estimate()?;
 		Ok(())
 	}
 
@@ -122,7 +120,7 @@ impl<E: CatalogExt> Import<E> {
 			keyframe,
 			duration: None,
 		})?;
-		self.estimate();
+		self.estimate()?;
 		Ok(())
 	}
 }

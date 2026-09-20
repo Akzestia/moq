@@ -18,12 +18,11 @@ that path is unrelated to this crate.)
 What works today:
 
 - **The architecture is right.** `moq-net` is generic over
-  `web_transport_trait::Session` and spawns via `web_async::spawn` (not
+  `web_transport_trait::poll::Session` and spawns via `web_async::spawn` (not
   `tokio::spawn`), so it is not tied to native QUIC.
-- **The WebTransport adapter is complete** (`src/transport.rs`): a newtype
-  bridge from `web-transport-wasm` (browser WebTransport) to the
-  `web-transport-trait` abstraction `moq-net` consumes. The orphan rule forces
-  the newtypes; the shapes line up almost 1:1.
+- **The browser transport needs no adapter**: `web-transport-wasm` implements
+  the poll traits `moq-net` consumes, so `src/transport.rs` is just the dial
+  (the ALPN list and the browser's two trust modes).
 - **It compiles to `wasm32-unknown-unknown` and produces `@moq/wasm`**: `just
   wasm` emits a typed, importable package (`Session` / `Broadcast` / `Track` /
   `Group`, used as `Moq.Session` etc. via `import * as Moq`, `Promise`-returning

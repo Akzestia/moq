@@ -13,6 +13,10 @@ futures and streams. A Native Assets hook supplies the Rust core for Android
 (API 24+), iOS (16+), Linux, macOS, and Windows. Flutter web is not supported,
 since it can't load a native library.
 
+Media frames use `keyframe` to mark a group start or a video keyframe. For audio,
+it is true only on the first frame of each group, even when every sample can be
+decoded independently.
+
 ```bash
 dart pub add moq        # or: flutter pub add moq
 ```
@@ -34,12 +38,36 @@ final broadcast = await moq.requestBroadcast('live/camera');
 final mine = moq.createBroadcast('live/camera');
 final track = mine.publishTrack(name: 'video', info: null);
 track.appendGroup().writeFrame(frame: MoqFrame(payload: bytes));
+mine.announce(route: MoqRoute());
 
 moq.close();
 ```
 
+The three advertising operations: `moq.createBroadcast(path)` (or
+`origin.createBroadcast`) returns an unadvertised producer;
+`broadcast.announce(route:)` / `broadcast.unannounce()` own that exact-path
+advertisement; `origin.dynamic_(prefix:, route:)` claims `prefix` and
+every path beneath it (`''` for everything; Dart spells the origin method
+`dynamic_` because `dynamic` is reserved). Hold the returned handle while the
+claim should stay advertised, and reject the requests you will not serve. A
+route is a capability, not an inventory; `announcement.path()` is the covered
+prefix.
+
+Sessions reconnect with backoff when the transport drops and re-announce local
+broadcasts. `moq.epoch` counts the connections, 1 on the first, pairing with
+`session.status()` to log each reconnect; `maxStreams` raises the peer's
+inbound stream cap for a subscriber to many tracks.
+
 Cancelling a stream releases the native cursor. The package re-exports
 `moq_ffi`, so the full generated API is available without a second import.
+Generated configuration setters throw if a connect, listen, or accept is in
+flight, or after `cancel()`.
+`ProtocolMoqException` carries a `MoqProtocolException` as `details` (scope, verbatim
+code, kind) when the peer sent a session or stream code.
+
+`moq.bandwidth()` divides the connection's send estimate; `reserve` a share
+for an app-owned encoder so several publishers on one session split the
+uplink instead of each targeting the whole thing.
 
 Unlike the other bindings, the published Dart binaries carry **no codecs**:
 catalog and container types are there, so already-encoded frames flow through

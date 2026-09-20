@@ -44,5 +44,5 @@ there. A full Dart artifact is
 
 ## Related
 
-- [FFI release workflow](/quest/m0/tooling/release-ffi.md) - the matrix the Swift and Kotlin quests double once instead of per file
+- [FFI release workflow](/quest/m2/tooling/release-ffi.md) - the matrix the Swift and Kotlin quests double once instead of per file
 - [Mobile](/quest/m2/mobile/README.md) - the consumers whose binary size this line is for
