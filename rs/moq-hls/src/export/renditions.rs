@@ -327,7 +327,7 @@ impl Producer {
 			}
 			return;
 		};
-		let section = archive.timeline;
+		let section = archive;
 		let clock = catalog.clock;
 
 		let Ok(mut current) = self.state.write() else {
