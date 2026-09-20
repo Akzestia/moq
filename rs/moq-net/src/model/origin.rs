@@ -372,7 +372,6 @@ const MAX_COST: u64 = (1 << 62) - 1;
 /// path as if nothing were cached, so it stays meaningful once discounts have
 /// flattened `warm`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-#[non_exhaustive]
 pub struct Cost {
 	/// The cost of pulling content via this route as the mesh stands today,
 	/// accumulated per link. Lower wins.
@@ -445,17 +444,6 @@ impl From<u64> for Cost {
 	}
 }
 
-impl From<(u64, u64)> for Cost {
-	/// Both magnitudes explicitly: `(warm, cold)`.
-	///
-	/// Unlike [`new`](Self::new), which prices the route undiscounted, this keeps a
-	/// discounted `warm` alongside its undiscounted `cold`, which is what an
-	/// application re-announcing an observed route means.
-	fn from((warm, cold): (u64, u64)) -> Self {
-		Self { warm, cold }
-	}
-}
-
 /// The path a route took through the mesh and what using it costs.
 ///
 /// The metadata half of an advertisement: [`Producer::dynamic`] pairs it with
@@ -499,15 +487,6 @@ impl Default for Route {
 }
 
 impl Route {
-	/// Append a hop to the chain, oldest first.
-	///
-	/// Fails with [`crate::InvalidHop`] for a hop the wire would reject: one past the
-	/// chain's length cap, or one already in it, which is a loop.
-	pub fn with_hop(mut self, hop: Hop) -> Result<Self, InvalidHop> {
-		self.hops.push(hop)?;
-		Ok(self)
-	}
-
 	/// Replace the hop chain.
 	pub fn with_hops(mut self, hops: Hops) -> Self {
 		self.hops = hops;
