@@ -336,7 +336,7 @@ pub(crate) fn launch(
 		socket,
 		endpoint,
 		key,
-		deadline: moq_net::runtime::Deadline::new(handle),
+		deadline: crate::Timer::new(handle),
 		scratch: Vec::with_capacity(TRAIN_SEGMENTS * SEGMENT),
 		blocked: false,
 	};
@@ -603,7 +603,7 @@ struct Driver {
 	/// frees the slot). Weak, because the endpoint owns us.
 	endpoint: Weak<endpoint::Inner>,
 	key: ConnectionHandle,
-	deadline: moq_net::runtime::Deadline<Handle>,
+	deadline: crate::Timer,
 	/// Egress staging: noq-proto writes into a `Vec`, so a train is built
 	/// here and copied into the socket's registered buffer.
 	scratch: Vec<u8>,

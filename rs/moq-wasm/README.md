@@ -17,9 +17,10 @@ that path is unrelated to this crate.)
 
 What works today:
 
-- **The architecture is right.** `moq-net` is generic over
-  `web_transport_trait::poll::Session` and spawns via `web_async::spawn` (not
-  `tokio::spawn`), so it is not tied to native QUIC.
+- **Executor-independent sessions.** `moq-net` is generic over
+  `web_transport_trait::poll::Session` and returns a driver for the caller to
+  run. `moq-wasm` spawns a runtime adapter via `web_async::spawn`, supplying
+  time and scheduling the driver's next wakeup on the browser.
 - **The browser transport needs no adapter**: `web-transport-wasm` implements
   the poll traits `moq-net` consumes, so `src/transport.rs` is just the dial
   (the ALPN list and the browser's two trust modes).
@@ -44,15 +45,11 @@ What works today:
    transport is `!Send`, but `SessionInner` used to hard-code `Send`.
    `web_async::MaybeSendBoxFuture` picks a `Send` boxed future on native and a
    local boxed future on wasm. Native behavior is unchanged.
-3. Timers and `Instant` routed through `web_async::time` instead of
-   `tokio::time` (session poll interval, subscriber linger, probe interval,
-   track-cache eviction). `web-async` re-exports `tokio::time` on native
-   and `wasmtimer` (a `performance.now()` + `setTimeout` shim) on wasm, so the
-   same code runs on both. tokio's clock is `std::time::Instant::now()`, which
-   *panics* on wasm (no clock) under `spawn_local` (no time driver); wasmtimer
-   fixes that. Native unchanged: `web_async::time::Instant` *is*
-   `tokio::time::Instant` there, so `tokio::time::pause`/`advance` test clocks
-   still work.
+3. Drivers accept `moq_net::time::Instant` and report their next timeout.
+   This crate supplies the browser clock and one re-armable sleep through
+   `web_async::time`, backed by `performance.now()` and `setTimeout`.
+   `moq-net` handles session sampling, linger, probes, and cache expiration
+   using the supplied time. It does not create runtime timers or spawn tasks.
 
 ### Timestamp fallback
 
