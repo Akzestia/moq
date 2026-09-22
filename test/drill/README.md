@@ -108,5 +108,3 @@ corpus nobody replays.
   drills see; `quest/next/transport-impairment-profile.md` adds the seeded UDP
   shaper they run under.
 - CI lane scheduling.
-- Failure bundles beyond what the test harness prints, which belongs to
-  `quest/next/qa-failure-artifacts.md`.
