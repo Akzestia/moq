@@ -2,7 +2,8 @@
 
 ## Goal
 
-Settle the public contracts of `moq-archive`, `moq-e2ee`, `moq-sock`,
+Make the origin's failover a state machine with a runtime-free test per
+transition, the correctness core of the relay. Alongside it, settle the public contracts of `moq-archive`, `moq-e2ee`, `moq-sock`,
 `moq-uring`, `moq-audio`, `moq-video`, `moq-transcode`, and `moq-nvenc`
 before the imminent release, while supplying the reusable GPU media support
 needed to remove raw-pixel CPU transfers from the Pronto CARLA demo. These are
@@ -85,6 +86,12 @@ proof remain in the existing backlog. Keep audio's integrated packetizing
 Producer and transcode's validated Ladder and coalescing active cursor. Keep
 one video Frame/Surface hierarchy and its deliberate native/wgpu type interop;
 do not add another media abstraction or a renderer crate during stabilization.
+
+## Quests
+
+- [Origin failover machine](/quest/main/origin-failover-machine.md) - a front's
+  source selection and track splicing become a pure step function with a
+  runtime-free test per transition
 
 ## Related
 
