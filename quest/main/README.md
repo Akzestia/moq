@@ -88,7 +88,6 @@ do not add another media abstraction or a renderer crate during stabilization.
 
 ## Quests
 
-- [uring identity](/quest/main/uring-identity.md) - sockets and connections carry their worker and steering identity
 - [GPU conversion and NVENC](/quest/main/video-gpu-encode.md) - convert, resize and
   encode imported frames without CPU pixel transfers or fallback
 - [AEC ownership](/quest/main/audio-aec.md) - one microphone owns an adaptive canceller and controls remain shareable
