@@ -89,6 +89,7 @@ do not add another media abstraction or a renderer crate during stabilization.
 ## Quests
 
 - [Binding parity](/quest/main/binding-parity.md) - every wrapper reaches every moq-ffi method in its own idiom with moq-net's verbs
+- [Audio jitter target](/quest/main/audio-jitter-target/README.md) - the audio playout target is a measured estimate of arrival timing in both languages, not a round-trip guess
 
 ## Related
 
