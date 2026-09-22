@@ -40,10 +40,6 @@ and C/binding documentation; run `just test smoke --all` in CI.
 Public API: owned frame access and conversion at the binding boundary. Wire:
 none. Consume the settled main frame/output contracts without replacing them.
 
-## Required
-
-- [Video output](/quest/main/video-output.md) - explicit native or CPU output
-
 ## Related
 
 - [OBS source](/quest/next/obs-moq-video/source.md) - consumes native C views

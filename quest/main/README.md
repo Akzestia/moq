@@ -90,7 +90,6 @@ do not add another media abstraction or a renderer crate during stabilization.
 
 - [GPU conversion and NVENC](/quest/main/video-gpu-encode.md) - validate the GPU
   conversion, resize and NVENC path for imported frames on NVIDIA hardware
-- [Video output](/quest/main/video-output.md) - codec output and subscription policy are separate, with native or CPU frames
 - [Media release review](/quest/main/media-release-review.md) - verify the settled contracts before separately authorizing 0.1 releases
 
 ## Related

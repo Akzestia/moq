@@ -25,7 +25,3 @@ maintainer decision and appropriate branch. No performance claim is accepted
 without measurements; unresolved optimization work alone does not block 0.1.
 
 Public API/wire impact: review only.
-
-## Required
-
-- [Video output](/quest/main/video-output.md) - output and subscription contracts are distinct
