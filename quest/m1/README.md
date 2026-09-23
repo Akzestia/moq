@@ -31,7 +31,6 @@ transport, benchmark tooling); worktrees isolate commits, not semantics.
 - [Gateway embedding](/quest/m1/gateway-embed.md) - moq-hls, moq-rtmp, and moq-rtc expose the loop their binaries run to an in-process embedder
 - [Catalog consumer](/quest/m1/hang-catalog-consumer.md) - reading a catalog is one call in Rust and JS, and JS gains a timeline consumer
 - [Ingest source](/quest/m1/net-ingest-source.md) - an announce says whether the broadcast entered on this relay or a peer
-- [@moq/net additive](/quest/m1/js-net-additive.md) - a live-broadcasts getter, `Table.dynamic`, credential refresh before redial, inferred `share`
 - [Publisher clocks](/quest/m1/publisher-clock.md) - wire the shared clock through native and browser publisher restarts
 - [Broadcast route](/quest/m1/js-broadcast-route.md) - JS Announce.Broadcast goes live on any claim matching its path, like Rust routed()
 - [io_uring handshake cancellation](/quest/m1/uring-handshake-cancel.md) - dropping a pending handshake releases its connection while the worker keeps running
