@@ -42,10 +42,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: release-kt-lib
-  cancel-in-progress: false
-
 jobs:
   check-version:
     name: Check version
@@ -107,6 +103,14 @@ jobs:
     needs: [check-version]
     # PRs always run (dry-run). Pushes publish only when the version is new.
     if: github.event_name == 'pull_request' || needs.check-version.outputs.should_publish == 'true'
+    # Only publishing runs share the serialized group. GitHub keeps a single
+    # pending run per group and drops the older one, so a PR or a no-op push
+    # sharing it silently cancelled a queued release. Scoped to this job so runs
+    # that skip publishing never enter it. Dry-runs get a per-ref group instead
+    # and cancel their superseded builds.
+    concurrency:
+      group: release-kt-lib-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     env:
       # Picked up by com.vanniktech.maven.publish via Gradle project properties.
@@ -152,8 +156,15 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
-      - name: Publish to Maven Central
+      # check-version runs outside the serialized group, so an earlier run
+      # holding it may have published this version since. Check again.
+      - name: Recheck wrapper publication
+        id: recheck
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: .github/scripts/release.sh maven-exists dev.moq moq "${{ needs.check-version.outputs.version }}"
+
+      - name: Publish to Maven Central
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && steps.recheck.outputs.exists != 'true'
         env:
           MOQ_VERSION: ${{ needs.check-version.outputs.version }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
