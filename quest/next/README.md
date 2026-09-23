@@ -20,7 +20,6 @@ transport, benchmark tooling); worktrees isolate commits, not semantics.
 
 ## Quests
 
-- [JSON churn](/quest/next/json-churn.md) - a moq-json update allocates a bounded amount whatever the document size, in every caller
 - [Origin narrowing](/quest/next/origin-narrowing.md) - a live origin grant narrows in place and ends the subscriptions it no longer covers, the deafen boundary #2714 asked for
 - [Local announcements](/quest/next/local-announce.md) - an origin's announce cursor and its broadcast resolver agree on what exists
 - [Relay embedding](/quest/next/relay-embed.md) - an embedder reads the resolved config, reuses the CLI merge, registers listener health, and spawns a test relay without TOML strings
