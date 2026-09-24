@@ -34,7 +34,6 @@ transport, benchmark tooling); worktrees isolate commits, not semantics.
 - [Publisher clocks](/quest/m1/publisher-clock.md) - wire the shared clock through native and browser publisher restarts
 - [Broadcast route](/quest/m1/js-broadcast-route.md) - JS Announce.Broadcast goes live on any claim matching its path, like Rust routed()
 - [io_uring handshake flush](/quest/m1/uring-handshake-flush.md) - a dial resolves only once its last handshake flight is on the wire, never stranding the peer
-- [Flaky timing tests](/quest/m1/flaky-timing-tests.md) - three real-clock tests become deterministic instead of failing under load
 - [CLI inspection](/quest/m1/cli-inspect/README.md) - `moq ls` lists what is live and `moq fetch` reads a group over MoQ, and a guide shows how to inspect a relay
 - [JS caught up](/quest/m1/js-announce-caught-up.md) - @moq/net's announce consumer says when the initial set has landed, like Rust
 - [IETF announce count](/quest/m1/ietf-announce-count.md) - an opt-in moq-transport extension carries the replay count, so IETF announce consumers go live without a timer
