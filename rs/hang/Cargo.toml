@@ -15,7 +15,9 @@ categories = ["multimedia", "network-programming", "web-programming"]
 [dependencies]
 bytes = { workspace = true }
 hex = { workspace = true }
+kio = { workspace = true }
 lazy_static = { workspace = true }
+moq-json = { workspace = true }
 moq-net = { workspace = true }
 regex = "1"
 serde = { workspace = true }
